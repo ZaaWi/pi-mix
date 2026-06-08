@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: ultrasonic
-          image: mhmdzawi/pi-mix-ultrasonic:latest
+          image: mhmdzawi/pi-mix-ultrasonic:e1f9ba16c7bfed381fe916f5239c62768c32d9f8
           imagePullPolicy: Always
           securityContext:
             privileged: true
