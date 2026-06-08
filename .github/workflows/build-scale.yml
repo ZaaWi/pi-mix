@@ -44,4 +44,5 @@ jobs:
           git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
           git add k8s/scale.yaml
           git diff --cached --quiet || git commit -m "update scale image to ${GITHUB_SHA}"
+          git pull --rebase
           git push

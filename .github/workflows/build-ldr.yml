@@ -44,4 +44,5 @@ jobs:
           git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
           git add k8s/ldr.yaml
           git diff --cached --quiet || git commit -m "update ldr image to ${GITHUB_SHA}"
+          git pull --rebase
           git push
