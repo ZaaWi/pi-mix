@@ -26,4 +26,19 @@ jobs:
           context: agents/serial-bridge
           platforms: linux/arm64
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/pi-mix-serial-bridge:latest
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-serial-bridge:latest
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-serial-bridge:${{ github.sha }}
+
+      - name: Update k8s manifest
+        run: |
+          sed -i 's|image: mhmdzawi/pi-mix-serial-bridge:.*|image: mhmdzawi/pi-mix-serial-bridge:'"${GITHUB_SHA}"'|' k8s/serial-bridge.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "pi-mix CI"
+          git config user.email "ci@pi-mix"
+          git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          git add k8s/serial-bridge.yaml
+          git diff --cached --quiet || git commit -m "update serial-bridge image to ${GITHUB_SHA}"
+          git push
