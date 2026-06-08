@@ -7,6 +7,9 @@ on:
       - agents/scale/**
       - .github/workflows/build-scale.yml
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,4 +29,19 @@ jobs:
           context: agents/scale
           platforms: linux/arm64
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/pi-mix-scale:latest
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-scale:latest
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-scale:${{ github.sha }}
+
+      - name: Update k8s manifest
+        run: |
+          sed -i 's|image: mhmdzawi/pi-mix-scale:.*|image: mhmdzawi/pi-mix-scale:'"${GITHUB_SHA}"'|' k8s/scale.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "pi-mix CI"
+          git config user.email "ci@pi-mix"
+          git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          git add k8s/scale.yaml
+          git diff --cached --quiet || git commit -m "update scale image to ${GITHUB_SHA}"
+          git push

@@ -7,6 +7,9 @@ on:
       - agents/ultrasonic/**
       - .github/workflows/build-ultrasonic.yml
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,4 +29,19 @@ jobs:
           context: agents/ultrasonic
           platforms: linux/arm64
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/pi-mix-ultrasonic:latest
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ultrasonic:latest
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ultrasonic:${{ github.sha }}
+
+      - name: Update k8s manifest
+        run: |
+          sed -i 's|image: mhmdzawi/pi-mix-ultrasonic:.*|image: mhmdzawi/pi-mix-ultrasonic:'"${GITHUB_SHA}"'|' k8s/ultrasonic.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "pi-mix CI"
+          git config user.email "ci@pi-mix"
+          git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          git add k8s/ultrasonic.yaml
+          git diff --cached --quiet || git commit -m "update ultrasonic image to ${GITHUB_SHA}"
+          git push
