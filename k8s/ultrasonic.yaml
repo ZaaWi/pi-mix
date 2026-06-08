@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ultrasonic
+  namespace: iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ultrasonic
+  template:
+    metadata:
+      labels:
+        app: ultrasonic
+    spec:
+      containers:
+        - name: ultrasonic
+          image: mhmdzawi/pi-mix-ultrasonic:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          env:
+            - name: MQTT_BROKER
+              value: mosquitto
+            - name: US_INTERVAL
+              value: "0.5"

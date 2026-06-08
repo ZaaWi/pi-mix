@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scale
+  namespace: iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scale
+  template:
+    metadata:
+      labels:
+        app: scale
+    spec:
+      containers:
+        - name: scale
+          image: mhmdzawi/pi-mix-scale:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          env:
+            - name: MQTT_BROKER
+              value: mosquitto
+            - name: SCALE_MAC
+              value: "50:FB:19:29:54:37"
+          volumeMounts:
+            - name: dbus
+              mountPath: /run/dbus
+      volumes:
+        - name: dbus
+          hostPath:
+            path: /run/dbus

@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ldr
+  namespace: iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ldr
+  template:
+    metadata:
+      labels:
+        app: ldr
+    spec:
+      containers:
+        - name: ldr
+          image: mhmdzawi/pi-mix-ldr:latest
+          imagePullPolicy: Always
+          env:
+            - name: BRIDGE_HOST
+              value: serial-bridge
+            - name: MQTT_BROKER
+              value: mosquitto
+            - name: LDR_INTERVAL
+              value: "1.0"

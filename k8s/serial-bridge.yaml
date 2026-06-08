@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serial-bridge
+  namespace: iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: serial-bridge
+  template:
+    metadata:
+      labels:
+        app: serial-bridge
+    spec:
+      containers:
+        - name: bridge
+          image: mhmdzawi/pi-mix-serial-bridge:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          env:
+            - name: BRIDGE_SERIAL_PORT
+              value: /dev/ttyAMA0
+            - name: BRIDGE_PORT
+              value: "9600"
+          ports:
+            - containerPort: 9600
