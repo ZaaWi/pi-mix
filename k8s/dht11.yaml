@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: dht11
-          image: mhmdzawi/pi-mix-dht11:latest
+          image: mhmdzawi/pi-mix-dht11:f87a73db42494499998f404a102ff91bf36074c4
           imagePullPolicy: Always
           env:
             - name: BRIDGE_HOST
