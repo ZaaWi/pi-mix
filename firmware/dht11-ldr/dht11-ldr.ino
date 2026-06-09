@@ -3,12 +3,14 @@
 #define DHTPIN 2
 #define DHTTYPE DHT11
 #define LDR_PIN A0
+#define LED_PIN 3
 
 DHT dht(DHTPIN, DHTTYPE);
 
 void setup() {
   Serial.begin(9600);
   dht.begin();
+  pinMode(LED_PIN, OUTPUT);
 }
 
 void loop() {
@@ -32,6 +34,14 @@ void handleCommand() {
   }
   else if (cmd == "LDR:READ") {
     readLDR();
+  }
+  else if (cmd == "LED:1") {
+    digitalWrite(LED_PIN, HIGH);
+    Serial.println("LED:OK");
+  }
+  else if (cmd == "LED:0") {
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("LED:OK");
   }
   else if (cmd == "READ") {
     readDHT();

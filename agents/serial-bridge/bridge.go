@@ -314,6 +314,30 @@ func handleRPC(conn net.Conn, req *Request, b *Bridge) {
 			writeErr(-32000, fmt.Sprintf("parse error: %s", r))
 		}
 
+	case "led_on":
+		r, err := b.cmd("LED:1")
+		if err != nil {
+			writeErr(-32002, err.Error())
+			return
+		}
+		if r == "LED:OK" {
+			respond(conn, req.ID, map[string]string{"status": "ok"}, 0, "")
+		} else {
+			writeErr(-32000, fmt.Sprintf("unexpected: %s", r))
+		}
+
+	case "led_off":
+		r, err := b.cmd("LED:0")
+		if err != nil {
+			writeErr(-32002, err.Error())
+			return
+		}
+		if r == "LED:OK" {
+			respond(conn, req.ID, map[string]string{"status": "ok"}, 0, "")
+		} else {
+			writeErr(-32000, fmt.Sprintf("unexpected: %s", r))
+		}
+
 	case "read_all":
 		r, err := b.cmd("READ")
 		if err != nil {
