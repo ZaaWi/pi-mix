@@ -22,11 +22,13 @@ import (
 )
 
 var (
-	serialPort  = env("BRIDGE_SERIAL_PORT", "/dev/ttyAMA0")
-	bindAddr    = env("BRIDGE_BIND", "0.0.0.0")
-	bindPort    = env("BRIDGE_PORT", "9600")
-	baudRate    = envInt("BRIDGE_BAUD", 9600)
-	readTimeout = envInt("BRIDGE_READ_TIMEOUT", 2)
+	serialPort    = env("BRIDGE_SERIAL_PORT", "/dev/ttyAMA0")
+	bindAddr      = env("BRIDGE_BIND", "0.0.0.0")
+	bindPort      = env("BRIDGE_PORT", "9600")
+	baudRate      = envInt("BRIDGE_BAUD", 9600)
+	readTimeout   = envInt("BRIDGE_READ_TIMEOUT", 2)
+	flashLEDPin   = envInt("FLASH_LED_PIN", 22)
+	flashLEDInvert = env("FLASH_LED_INVERT", "") != ""
 )
 
 func env(k, d string) string {
@@ -149,9 +151,32 @@ func resetPulse() error {
 	return nil
 }
 
+func setFlashLED(on bool) {
+	c, err := gpiod.NewChip("gpiochip0")
+	if err != nil {
+		log.Printf("flash LED: open chip: %v", err)
+		return
+	}
+	defer c.Close()
+
+	val := 0
+	if on != flashLEDInvert {
+		val = 1
+	}
+	l, err := c.RequestLine(flashLEDPin, gpiod.AsOutput(val))
+	if err != nil {
+		log.Printf("flash LED: request line: %v", err)
+		return
+	}
+	l.Close()
+}
+
 func (b *Bridge) flash(hexData []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	setFlashLED(true)
+	defer setFlashLED(false)
 
 	if b.port != nil {
 		b.port.Close()
