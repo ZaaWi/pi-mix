@@ -25,7 +25,7 @@ void handleCommand() {
     Serial.println("PONG");
   }
   else if (cmd == "LDR:PING") {
-    Serial.println("PONG");
+    Serial.println("PONGY");
   }
   else if (cmd == "DHT:READ") {
     readDHT();
