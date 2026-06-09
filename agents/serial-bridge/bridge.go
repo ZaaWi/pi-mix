@@ -140,10 +140,12 @@ func resetPulse() error {
 	if err != nil {
 		return fmt.Errorf("request line: %w", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	defer l.Close()
+
 	l.SetValue(0)
-	time.Sleep(200 * time.Millisecond)
-	l.Close()
+	time.Sleep(100 * time.Millisecond)
+	l.SetValue(1)
+	time.Sleep(500 * time.Millisecond)
 	return nil
 }
 
