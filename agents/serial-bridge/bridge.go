@@ -175,13 +175,18 @@ func (b *Bridge) flash(hexData []byte) error {
 		"-U", "flash:w:"+tmpFile+":i",
 	)
 	out, err := cmd.CombinedOutput()
+	time.Sleep(500 * time.Millisecond)
+	if reopenErr := b.open(); reopenErr != nil {
+		if err != nil {
+			return fmt.Errorf("avrdude: %w (reopen: %v): %s", err, reopenErr, out)
+		}
+		return fmt.Errorf("flash OK but reopen: %w", reopenErr)
+	}
 	if err != nil {
 		return fmt.Errorf("avrdude: %w: %s", err, out)
 	}
 	log.Printf("flash OK: %s", strings.TrimSpace(string(out)))
-
-	time.Sleep(500 * time.Millisecond)
-	return b.open()
+	return nil
 }
 
 type Request struct {
