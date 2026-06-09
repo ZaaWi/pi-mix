@@ -12,4 +12,4 @@ spec:
       restartPolicy: Never
       containers:
         - name: flasher
-          image: mhmdzawi/pi-mix-firmware:08d69a8c15d358900ece02a5e8476f9b0f95d673
+          image: mhmdzawi/pi-mix-firmware:8023bb9625203978b5cc98c9e9e0ac826af0dc22
