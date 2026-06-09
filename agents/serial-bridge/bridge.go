@@ -136,11 +136,13 @@ func resetPulse() error {
 	}
 	defer c.Close()
 
-	l, err := c.RequestLine(18, gpiod.AsOutput(0))
+	l, err := c.RequestLine(18, gpiod.AsOutput(1))
 	if err != nil {
 		return fmt.Errorf("request line: %w", err)
 	}
 	time.Sleep(100 * time.Millisecond)
+	l.SetValue(0)
+	time.Sleep(200 * time.Millisecond)
 	l.Close()
 	return nil
 }
