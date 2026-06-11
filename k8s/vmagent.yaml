@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmagent
+  namespace: iot
+  labels:
+    app: vmagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmagent
+  template:
+    metadata:
+      labels:
+        app: vmagent
+    spec:
+      containers:
+        - name: vmagent
+          image: victoriametrics/vmagent:v1.101.0
+          args:
+            - "-remoteWrite.url=http://victoriametrics.iot.svc.cluster.local:8428/api/v1/write"
+            - "-remoteWrite.tmpDataPath=/buffer"
+          ports:
+            - containerPort: 8429
+              name: http
+          volumeMounts:
+            - name: buffer
+              mountPath: /buffer
+      volumes:
+        - name: buffer
+          hostPath:
+            path: /var/lib/vmagent-buffer
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmagent
+  namespace: iot
+spec:
+  selector:
+    app: vmagent
+  ports:
+    - protocol: TCP
+      port: 8429
+      targetPort: http
