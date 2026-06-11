@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestor
+  namespace: iot
+  labels:
+    app: ingestor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestor
+  template:
+    metadata:
+      labels:
+        app: ingestor
+    spec:
+      containers:
+        - name: ingestor
+          image: ingestor:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MQTT_BROKER
+              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
+            - name: VMAGENT_URL
+              value: "http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus"
