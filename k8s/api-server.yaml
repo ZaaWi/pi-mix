@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: iot
+  labels:
+    app: api-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+        - name: api-server
+          image: api-server:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MQTT_BROKER
+              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
+            - name: VM_URL
+              value: "http://victoriametrics.iot.svc.cluster.local:8428"
+          ports:
+            - containerPort: 8080
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+  namespace: iot
+spec:
+  selector:
+    app: api-server
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: http
