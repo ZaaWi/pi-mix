@@ -15,6 +15,9 @@ const TIME_RANGES = [
   { label: 'Last 1 Hour', seconds: 60 * 60, step: '1m' },
   { label: 'Last 12 Hours', seconds: 12 * 60 * 60, step: '5m' },
   { label: 'Last 24 Hours', seconds: 24 * 60 * 60, step: '15m' },
+  { label: 'Last 2 Days', seconds: 2 * 24 * 60 * 60, step: '30m' },
+  { label: 'Last 7 Days', seconds: 7 * 24 * 60 * 60, step: '2h' },
+  { label: 'Last 30 Days', seconds: 30 * 24 * 60 * 60, step: '12h' },
 ];
 
 export const HistoryCharts: React.FC = () => {
@@ -36,10 +39,16 @@ export const HistoryCharts: React.FC = () => {
         if (json.status === "success" && json.data && json.data.result) {
           const result = json.data.result[0];
           if (result && result.values) {
-            const formatted = result.values.map((val: any[]) => ({
-               time: new Date(val[0] * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
-               value: parseFloat(val[1])
-            }));
+            const isMultiDay = timeRange.seconds > 24 * 60 * 60;
+            const formatted = result.values.map((val: any[]) => {
+               const date = new Date(val[0] * 1000);
+               const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+               const dateStr = date.toLocaleDateString([], {month: 'short', day: 'numeric'});
+               return {
+                 time: isMultiDay ? `${dateStr} ${timeStr}` : timeStr,
+                 value: parseFloat(val[1])
+               };
+            });
             setHistoryData(formatted);
           } else {
             setHistoryData([]);
