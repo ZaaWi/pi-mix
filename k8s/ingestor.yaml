@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: ingestor
-          image: mhmdzawi/pi-mix-ingestor:dev
+          image: mhmdzawi/pi-mix-ingestor:12d895a96cac218ddc26a72846b52b7cba146422
           imagePullPolicy: IfNotPresent
           env:
             - name: MQTT_BROKER
