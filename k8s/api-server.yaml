@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: api-server
-          image: api-server:dev
+          image: mhmdzawi/pi-mix-api-server:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: MQTT_BROKER
