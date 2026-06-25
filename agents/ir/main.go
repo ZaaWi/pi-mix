@@ -45,9 +45,14 @@ func main() {
 			if err != nil && err != ErrNoStart {
 				log.Printf("decode error: %v", err)
 			}
-			if len(frames) > 0 && time.Since(lastPublish) > 250*time.Millisecond {
-				pub.Publish(frames[0])
-				lastPublish = time.Now()
+			if len(frames) > 0 {
+				f := frames[0]
+				if f.Value&0x00FFFFFF != 0 {
+					if time.Since(lastPublish) > 500*time.Millisecond {
+						pub.Publish(f)
+						lastPublish = time.Now()
+					}
+				}
 			}
 			if len(frames) > 0 {
 				pending = pending[:0]
