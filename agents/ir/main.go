@@ -48,7 +48,7 @@ func main() {
 				pub.Publish(f)
 			}
 			if len(frames) > 0 {
-				trim(10)
+				pending = pending[:0]
 			}
 
 		case <-sigCh:

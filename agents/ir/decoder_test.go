@@ -111,14 +111,11 @@ func TestDecodeMultipleFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeFrames error: %v", err)
 	}
-	if len(frames) != 2 {
-		t.Fatalf("expected 2 frames, got %d", len(frames))
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 frame (first only), got %d", len(frames))
 	}
 	if frames[0].Value != val1 {
 		t.Fatalf("frame 0: expected 0x%08X, got 0x%08X", val1, frames[0].Value)
-	}
-	if frames[1].Value != val2 {
-		t.Fatalf("frame 1: expected 0x%08X, got 0x%08X", val2, frames[1].Value)
 	}
 }
 

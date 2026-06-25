@@ -81,8 +81,7 @@ func DecodeFrames(edges []Edge) ([]Frame, error) {
 					Value: val,
 					Hex:   fmt.Sprintf("%08X", val),
 				})
-				i += 66
-				continue
+				break
 			}
 		}
 		i++
