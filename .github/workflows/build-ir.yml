@@ -1,11 +1,11 @@
-name: Build ultrasonic
+name: Build ir-agent
 
 on:
   push:
     branches: [main]
     paths:
-      - agents/ultrasonic/**
-      - .github/workflows/build-ultrasonic.yml
+      - agents/ir/**
+      - .github/workflows/build-ir.yml
 
 permissions:
   contents: write
@@ -26,23 +26,23 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: agents/ultrasonic
+          context: agents/ir
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ultrasonic:latest
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ultrasonic:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ir:latest
+            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ir:${{ github.sha }}
 
       - name: Update k8s manifest
         run: |
-          sed -i 's|image: mhmdzawi/pi-mix-ultrasonic:.*|image: mhmdzawi/pi-mix-ultrasonic:'"${GITHUB_SHA}"'|' k8s/ultrasonic.yaml
+          sed -i 's|image: mhmdzawi/pi-mix-ir:.*|image: mhmdzawi/pi-mix-ir:'"${GITHUB_SHA}"'|' k8s/ir.yaml
 
       - name: Commit and push
         run: |
           git config user.name "pi-mix CI"
           git config user.email "ci@pi-mix"
           git remote set-url origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
-          git add k8s/ultrasonic.yaml
-          git diff --cached --quiet || git commit -m "update ultrasonic image to ${GITHUB_SHA}"
+          git add k8s/ir.yaml
+          git diff --cached --quiet || git commit -m "update ir image to ${GITHUB_SHA}"
           git pull --rebase
           git push

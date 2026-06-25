@@ -10,7 +10,9 @@ export interface SensorData {
     weight_kg: number;
     status: string;
   };
-  ultrasonic?: {
-    distance_cm: number;
+  ir?: {
+    code: string;
+    protocol: string;
+    bits: number;
   };
 }

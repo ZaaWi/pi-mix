@@ -1,5 +1,5 @@
 import React from 'react';
-import { Thermometer, Droplets, Sun, Scale, Ruler } from 'lucide-react';
+import { Thermometer, Droplets, Sun, Scale, Radio } from 'lucide-react';
 import { SensorCard } from './SensorCard';
 import { SensorData } from '../types';
 
@@ -12,7 +12,7 @@ export const LiveMetricsGrid: React.FC<LiveMetricsGridProps> = ({ state, pulses 
   const dht = state.dht11 || {};
   const ldr = state.ldr || {};
   const scale = state.scale || {};
-  const ultrasonic = state.ultrasonic || {};
+  const ir = state.ir || {};
 
   return (
     <div className="grid">
@@ -46,11 +46,12 @@ export const LiveMetricsGrid: React.FC<LiveMetricsGridProps> = ({ state, pulses 
         subText={scale.status ? `Status: ${scale.status}` : undefined}
       />
       <SensorCard 
-        title="Distance" 
-        icon={<Ruler color="#a3e635" />} 
-        value={ultrasonic.distance_cm !== undefined ? ultrasonic.distance_cm : '--'} 
-        unit="cm" 
-        isPulse={!!pulses.ultrasonic} 
+        title="IR Remote" 
+        icon={<Radio color="#a78bfa" />} 
+        value={ir.code || '--'} 
+        unit="" 
+        isPulse={!!pulses.ir} 
+        subText={ir.protocol ? `Protocol: ${ir.protocol}` : undefined}
       />
     </div>
   );

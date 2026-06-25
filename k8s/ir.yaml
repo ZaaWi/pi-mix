@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ir
+  namespace: iot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ir
+  template:
+    metadata:
+      labels:
+        app: ir
+    spec:
+      containers:
+        - name: ir
+          image: mhmdzawi/pi-mix-ir:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          env:
+            - name: IR_GPIO_CHIP
+              value: gpiochip0
+            - name: IR_GPIO_OFFSET
+              value: "17"
+            - name: MQTT_BROKER
+              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
+            - name: MQTT_TOPIC
+              value: pi/ir
+            - name: BRIDGE_HOST
+              value: serial-bridge
+            - name: BRIDGE_PORT
+              value: "9600"
+            - name: IR_ACTION_FILE
+              value: /etc/ir-actions.json
+          volumeMounts:
+            - name: actions
+              mountPath: /etc/ir-actions.json
+              subPath: ir-actions.json
+      volumes:
+        - name: actions
+          configMap:
+            name: ir-actions
+            optional: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ir-actions
+  namespace: iot
+data:
+  ir-actions.json: |
+    {
+      "codes": {}
+    }

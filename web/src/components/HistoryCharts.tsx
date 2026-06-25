@@ -6,7 +6,6 @@ const METRICS: Record<string, { label: string; color: string }> = {
   'sensor_temp_c': { label: 'Temperature (°C)', color: '#38bdf8' },
   'sensor_humidity_pct': { label: 'Humidity (%)', color: '#60a5fa' },
   'sensor_weight_kg': { label: 'Weight (kg)', color: '#f472b6' },
-  'sensor_distance_cm': { label: 'Distance (cm)', color: '#a3e635' },
   'sensor_analog': { label: 'Luminosity', color: '#fcd34d' }
 };
 
