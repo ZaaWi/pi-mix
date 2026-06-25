@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
 	cfg := LoadConfig()
 	pub := NewPublisher(cfg)
@@ -22,6 +22,7 @@ func main() {
 	log.Printf("listening on %s:%d", cfg.GPIOChip, cfg.GPIOOffset)
 
 	var pending []Edge
+	var lastPublish time.Time
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -44,8 +45,9 @@ func main() {
 			if err != nil && err != ErrNoStart {
 				log.Printf("decode error: %v", err)
 			}
-			for _, f := range frames {
-				pub.Publish(f)
+			if len(frames) > 0 && time.Since(lastPublish) > 250*time.Millisecond {
+				pub.Publish(frames[0])
+				lastPublish = time.Now()
 			}
 			if len(frames) > 0 {
 				pending = pending[:0]
