@@ -26,11 +26,10 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	flushPending := func() []Edge {
-		if len(pending) > 1000 {
-			pending = pending[len(pending)-500:]
+	trim := func(n int) {
+		if len(pending) > n {
+			pending = pending[len(pending)-n:]
 		}
-		return pending
 	}
 
 	for {
@@ -40,13 +39,16 @@ func main() {
 				return
 			}
 			pending = append(pending, batch...)
-			batch = flushPending()
-			frames, err := DecodeFrames(batch)
+			trim(500)
+			frames, err := DecodeFrames(pending)
 			if err != nil && err != ErrNoStart {
 				log.Printf("decode error: %v", err)
 			}
 			for _, f := range frames {
 				pub.Publish(f)
+			}
+			if len(frames) > 0 {
+				trim(10)
 			}
 
 		case <-sigCh:
@@ -55,7 +57,7 @@ func main() {
 			os.Exit(0)
 
 		case <-time.After(5 * time.Second):
-			_ = flushPending()
+			trim(500)
 		}
 	}
 }
