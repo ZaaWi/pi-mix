@@ -2,7 +2,7 @@ name: Build db-ingestor
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/db-ingestor/**
       - .github/workflows/build-db-ingestor.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-db-ingestor:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-db-ingestor:${{ github.sha }}
 
       - name: Update k8s manifest

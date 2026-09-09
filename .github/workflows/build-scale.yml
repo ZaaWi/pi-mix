@@ -2,7 +2,7 @@ name: Build scale
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/scale/**
       - .github/workflows/build-scale.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-scale:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-scale:${{ github.sha }}
 
       - name: Update k8s manifest

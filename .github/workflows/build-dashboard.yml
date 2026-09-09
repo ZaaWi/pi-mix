@@ -2,7 +2,7 @@ name: Build Web Dashboard
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - web/**
       - .github/workflows/build-dashboard.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-dashboard:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-dashboard:${{ github.sha }}
 
       - name: Update k8s manifest

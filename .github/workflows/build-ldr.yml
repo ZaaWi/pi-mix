@@ -2,7 +2,7 @@ name: Build ldr
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/ldr/**
       - .github/workflows/build-ldr.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ldr:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-ldr:${{ github.sha }}
 
       - name: Update k8s manifest

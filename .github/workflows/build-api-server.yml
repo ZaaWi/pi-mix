@@ -2,7 +2,7 @@ name: Build API Server
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/api-server/**
       - .github/workflows/build-api-server.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-api-server:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-api-server:${{ github.sha }}
 
       - name: Update k8s manifest

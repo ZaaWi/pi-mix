@@ -2,7 +2,7 @@ name: Build firmware
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - firmware/**
       - .github/workflows/build-firmware.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-firmware:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-firmware:${{ github.sha }}
 
       - name: Update k8s manifest

@@ -2,7 +2,7 @@ name: Build ir-agent
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/ir/**
       - .github/workflows/build-ir.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-ir:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-ir:${{ github.sha }}
 
       - name: Update k8s manifest

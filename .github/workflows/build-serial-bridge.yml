@@ -2,7 +2,7 @@ name: Build serial-bridge
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/serial-bridge/**
       - .github/workflows/build-serial-bridge.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-serial-bridge:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-serial-bridge:${{ github.sha }}
 
       - name: Update k8s manifest

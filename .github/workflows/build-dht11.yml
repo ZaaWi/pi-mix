@@ -2,7 +2,7 @@ name: Build dht11
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - agents/dht11/**
       - .github/workflows/build-dht11.yml
@@ -30,7 +30,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/pi-mix-dht11:latest
             ${{ secrets.DOCKER_USERNAME }}/pi-mix-dht11:${{ github.sha }}
 
       - name: Update k8s manifest
