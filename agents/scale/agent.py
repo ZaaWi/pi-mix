@@ -29,25 +29,19 @@ class Publisher:
         except AttributeError:
             self.client = mqtt.Client()
         self.connected = False
-        self.client.reconnect_delay_set(min_delay=1, max_delay=30)
-        self.client.on_connect = self._on_connect
-        self.client.on_disconnect = self._on_disconnect
-        self.client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=30)
-        self.client.loop_start()
-
-    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
-        self.connected = True
-        print(json.dumps({"event": "mqtt", "msg": f"connected: {reason_code}"}), flush=True)
-
-    def _on_disconnect(self, client, userdata, flags=None, reason_code=None, properties=None):
-        self.connected = False
-        print(json.dumps({"event": "error", "msg": f"mqtt disconnected: {reason_code}"}), flush=True)
+        try:
+            self.client.connect(MQTT_BROKER, MQTT_PORT, keepalive=30)
+            self.client.loop_start()
+            self.connected = True
+        except Exception as e:
+            print(json.dumps({"event": "error", "msg": f"mqtt connect failed: {e}"}), flush=True)
 
     def publish(self, payload):
-        try:
-            self.client.publish(MQTT_TOPIC, json.dumps(payload), qos=1)
-        except Exception as e:
-            print(json.dumps({"event": "error", "msg": f"mqtt publish failed: {e}"}), flush=True)
+        if self.connected:
+            try:
+                self.client.publish(MQTT_TOPIC, json.dumps(payload), qos=1)
+            except Exception as e:
+                print(json.dumps({"event": "error", "msg": f"mqtt publish failed: {e}"}), flush=True)
         print(json.dumps(payload), flush=True)
 
 
