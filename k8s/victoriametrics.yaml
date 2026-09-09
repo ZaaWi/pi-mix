@@ -5,7 +5,6 @@ metadata:
   namespace: iot
   labels:
     app: victoriametrics
-    hdd-snitch.storage/lab: "true"
 spec:
   replicas: 1
   selector:
@@ -15,7 +14,6 @@ spec:
     metadata:
       labels:
         app: victoriametrics
-        hdd-snitch.storage/lab: "true"
     spec:
       containers:
         - name: victoriametrics
@@ -32,8 +30,8 @@ spec:
       volumes:
         - name: storage
           hostPath:
-            path: /mnt/lab/victoriametrics-data
-            type: Directory
+            path: /var/lib/victoriametrics-data
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
