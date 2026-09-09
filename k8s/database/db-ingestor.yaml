@@ -23,7 +23,7 @@ spec:
             claimName: db-ingestor-spill
       containers:
         - name: db-ingestor
-          image: mhmdzawi/pi-mix-db-ingestor:b297b17
+          image: mhmdzawi/pi-mix-db-ingestor:dev
           imagePullPolicy: IfNotPresent
           env:
             - name: MQTT_BROKER

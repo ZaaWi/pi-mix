@@ -15,12 +15,10 @@ spec:
     spec:
       containers:
         - name: dht11
-          image: mhmdzawi/pi-mix-dht11:fc19e55
-          imagePullPolicy: IfNotPresent
+          image: mhmdzawi/pi-mix-dht11:e1f9ba16c7bfed381fe916f5239c62768c32d9f8
+          imagePullPolicy: Always
           env:
             - name: BRIDGE_HOST
               value: serial-bridge
             - name: MQTT_BROKER
               value: mosquitto
-      nodeSelector:
-        kubernetes.io/hostname: the-bear
