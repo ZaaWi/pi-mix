@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: ldr
-          image: mhmdzawi/pi-mix-ldr:e1f9ba16c7bfed381fe916f5239c62768c32d9f8
+          image: mhmdzawi/pi-mix-ldr:413788d8d951fc17d8d30648e4deeccc74ca8864
           imagePullPolicy: Always
           env:
             - name: BRIDGE_HOST
