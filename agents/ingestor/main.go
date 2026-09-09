@@ -112,7 +112,7 @@ func handleMessage(buffer *MetricsBuffer) mqtt.MessageHandler {
 
 		for key, val := range payload {
 			// Ignore structural fields, only grab telemetry
-			if key == "event" || key == "sensor" {
+			if key == "event" || key == "sensor" || key == "ts" {
 				continue
 			}
 			if num, ok := val.(float64); ok {

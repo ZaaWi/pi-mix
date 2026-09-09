@@ -90,6 +90,7 @@ def main():
         payload = {
             "event": "reading",
             "sensor": "dht11",
+            "ts": int(time.time()),
             "temp_c": result["temp_c"],
             "humidity_pct": result["humidity_pct"],
         }

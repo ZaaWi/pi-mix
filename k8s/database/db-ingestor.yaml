@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-ingestor
+  namespace: database
+  labels:
+    app: db-ingestor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-ingestor
+  template:
+    metadata:
+      labels:
+        app: db-ingestor
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+      volumes:
+        - name: spill-data
+          persistentVolumeClaim:
+            claimName: db-ingestor-spill
+      containers:
+        - name: db-ingestor
+          image: mhmdzawi/pi-mix-db-ingestor:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MQTT_BROKER
+              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
+            - name: MQTT_TOPIC
+              value: "pi/dht11,pi/ldr"
+            - name: SPILL_DIR
+              value: "/var/lib/db-ingestor/spill"
+            - name: PG_HOST
+              value: "postgres.database.svc.cluster.local"
+            - name: PG_PORT
+              value: "5432"
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: POSTGRES_USER
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: POSTGRES_PASSWORD
+            - name: PG_DB
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: spill-data
+              mountPath: /var/lib/db-ingestor
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          ports:
+            - containerPort: 8090
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10

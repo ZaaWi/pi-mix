@@ -90,6 +90,7 @@ def main():
         payload = {
             "event": "reading",
             "sensor": "ldr",
+            "ts": int(time.time()),
             "analog": result["analog"],
         }
         pub.publish(payload)
