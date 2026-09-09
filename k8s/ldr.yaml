@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: ldr
-          image: mhmdzawi/pi-mix-ldr:e1f9ba16c7bfed381fe916f5239c62768c32d9f8
-          imagePullPolicy: Always
+          image: mhmdzawi/pi-mix-ldr:fc19e55
+          imagePullPolicy: IfNotPresent
           env:
             - name: BRIDGE_HOST
               value: serial-bridge
@@ -24,3 +24,5 @@ spec:
               value: mosquitto
             - name: LDR_INTERVAL
               value: "1.0"
+      nodeSelector:
+        kubernetes.io/hostname: the-bear

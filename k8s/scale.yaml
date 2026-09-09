@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: scale
-          image: mhmdzawi/pi-mix-scale:e1f9ba16c7bfed381fe916f5239c62768c32d9f8
-          imagePullPolicy: Always
+          image: mhmdzawi/pi-mix-scale:fc19e55
+          imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
           env:
@@ -27,6 +27,8 @@ spec:
           volumeMounts:
             - name: dbus
               mountPath: /run/dbus
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
       volumes:
         - name: dbus
           hostPath:

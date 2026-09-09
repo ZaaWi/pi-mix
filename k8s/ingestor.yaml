@@ -17,10 +17,12 @@ spec:
     spec:
       containers:
         - name: ingestor
-          image: mhmdzawi/pi-mix-ingestor:12d895a96cac218ddc26a72846b52b7cba146422
+          image: mhmdzawi/pi-mix-ingestor:b297b17
           imagePullPolicy: IfNotPresent
           env:
             - name: MQTT_BROKER
               value: "tcp://mosquitto.iot.svc.cluster.local:1883"
             - name: VMAGENT_URL
               value: "http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus"
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
