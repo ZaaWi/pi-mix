@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: scale
   namespace: iot
+  labels:
+    app: scale
 spec:
   replicas: 1
   selector:
@@ -14,20 +16,42 @@ spec:
         app: scale
     spec:
       containers:
-        - name: scale
-          image: mhmdzawi/pi-mix-scale:413788d8d951fc17d8d30648e4deeccc74ca8864
-          imagePullPolicy: Always
-          securityContext:
-            privileged: true
-          env:
-            - name: MQTT_BROKER
-              value: mosquitto
-            - name: SCALE_MAC
-              value: "50:FB:19:29:54:37"
-          volumeMounts:
-            - name: dbus
-              mountPath: /run/dbus
-      volumes:
+      - name: scale
+        image: mhmdzawi/pi-mix-scale:413788d8d951fc17d8d30648e4deeccc74ca8864
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        env:
+        - name: MQTT_BROKER
+          value: mosquitto
+        - name: SCALE_MAC
+          value: 50:FB:19:29:54:37
+        - name: MQTT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: username
+        - name: MQTT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: password
+        volumeMounts:
         - name: dbus
-          hostPath:
-            path: /run/dbus
+          mountPath: /run/dbus
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+      volumes:
+      - name: dbus
+        hostPath:
+          path: /run/dbus
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+  strategy:
+    type: Recreate

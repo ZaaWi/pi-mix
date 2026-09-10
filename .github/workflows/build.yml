@@ -1,0 +1,95 @@
+name: Test and build sensor services
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths: ['agents/**', 'web/**', 'firmware/**', 'tests/**', '.github/workflows/build.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pi-mix-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: verification-only
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_PG_DSN: postgresql://postgres:verification-only@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - run: psql "$TEST_PG_DSN" -v ON_ERROR_STOP=1 -f agents/db-ingestor/migrations/000_sensor_schema.sql -f agents/db-ingestor/migrations/001_reliable_ingestion.sql
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agents/db-ingestor/go.mod
+          cache: false
+      - run: |
+          for module in agents/api-server agents/ingestor agents/db-ingestor agents/ir agents/serial-bridge; do
+            (cd "$module" && go test ./...)
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci && npm run build
+        working-directory: web
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 3
+      matrix:
+        include:
+          - {name: api-server, context: agents/api-server, platforms: 'linux/amd64,linux/arm64'}
+          - {name: ingestor, context: agents/ingestor, platforms: 'linux/amd64,linux/arm64'}
+          - {name: db-ingestor, context: agents/db-ingestor, platforms: 'linux/amd64,linux/arm64'}
+          - {name: dashboard, context: web, platforms: 'linux/amd64,linux/arm64'}
+          - {name: dht11, context: agents/dht11, platforms: linux/arm64}
+          - {name: ldr, context: agents/ldr, platforms: linux/arm64}
+          - {name: scale, context: agents/scale, platforms: linux/arm64}
+          - {name: ir, context: agents/ir, platforms: linux/arm64}
+          - {name: serial-bridge, context: agents/serial-bridge, platforms: linux/arm64}
+          - {name: firmware, context: firmware, platforms: linux/arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/pi-mix-${{ matrix.name }}:${{ github.sha }}
+  update-manifests:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Update images together after all builds succeed
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$IMAGE_SHA" || { echo 'Source advanced; a newer build will publish its images.'; exit 0; }
+          python3 - <<'PY'
+          import os, pathlib, re
+          for p in list(pathlib.Path('k8s').rglob('*.yaml'))+[pathlib.Path('ops/firmware-flasher.yaml')]:
+              p.write_text(re.sub(r'(image: mhmdzawi/pi-mix-[a-z-]+:)[^\s]+',lambda m:m[1]+os.environ['IMAGE_SHA'],p.read_text()))
+          PY
+          git config user.name 'pi-mix CI'
+          git config user.email 'ci@pi-mix'
+          git add k8s ops/firmware-flasher.yaml
+          git diff --cached --quiet || git commit -m "Deploy tested images ${IMAGE_SHA}"
+          git push

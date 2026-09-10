@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-schema
+  namespace: database
+  labels:
+    app: postgres
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+data:
+  schema.sql: "-- Rolled-up sensor data: 15-min and 1-hour buckets per sensor+metric.\n\
+    -- Written by db-ingestor; flush is idempotent via the UNIQUE upsert key.\nCREATE\
+    \ TABLE IF NOT EXISTS pi_sensor_data (\n  id          BIGSERIAL PRIMARY KEY,\n\
+    \  sensor      TEXT NOT NULL,                 -- e.g. 'dht11', 'ldr'\n  metric\
+    \      TEXT NOT NULL,                 -- e.g. 'temp_c', 'humidity_pct', 'analog'\n\
+    \  interval    TEXT NOT NULL CHECK (interval IN ('15m', '1h')),\n  ts        \
+    \  TIMESTAMPTZ NOT NULL,          -- bucket start (Pi source clock)\n  count \
+    \      INTEGER NOT NULL,              -- raw samples rolled in\n  avg        \
+    \ DOUBLE PRECISION NOT NULL,\n  min         DOUBLE PRECISION NOT NULL,\n  max\
+    \         DOUBLE PRECISION NOT NULL,\n  last        DOUBLE PRECISION NOT NULL,\n\
+    \  inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),  \n  UNIQUE (sensor, metric,\
+    \ interval, ts)\n);\n\nCREATE INDEX IF NOT EXISTS idx_pi_sensor_data_ts\n  ON\
+    \ pi_sensor_data (ts);\n\nCREATE INDEX IF NOT EXISTS idx_pi_sensor_data_lookup\n\
+    \  ON pi_sensor_data (sensor, metric, interval, ts DESC);"

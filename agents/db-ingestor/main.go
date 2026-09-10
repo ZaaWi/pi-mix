@@ -1,544 +1,48 @@
+// Sensor events are checkpointed as immutable batches on the storage node.
+// MQTT is acknowledged only after fsync; PostgreSQL replay is idempotent.
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	_ "github.com/lib/pq"
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
-
-	mqtt "github.com/eclipse/paho.mqtt.golang"
-	_ "github.com/lib/pq"
 )
 
-// Bucket width for the persisted fine granularity.
-const bucketSecs = int64(15 * 60)
-
-// Env-driven config.
-var (
-	mqttBroker    = env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")
-	mqttTopics    = splitEnv("MQTT_TOPIC", "pi/dht11,pi/ldr")
-	pgHost        = env("PG_HOST", "postgres.database.svc.cluster.local")
-	pgPort        = env("PG_PORT", "5432")
-	pgUser        = env("PG_USER", "appuser")
-	pgPass        = env("PG_PASSWORD", "appdb")
-	pgDB          = env("PG_DB", "appdb")
-	spillDir      = env("SPILL_DIR", "/var/lib/db-ingestor/spill")
-	drainInterval = envDuration("DRAIN_INTERVAL", "60s")
-	rollEvery     = envDuration("ROLL_INTERVAL", "30s")
-	gracePeriod   = envDuration("CLOSE_GRACE", "5s")
-	httpAddr      = env("HTTP_ADDR", ":8090")
-)
-
-// acc is a running aggregate for one sensor+metric within one bucket.
-type acc struct {
-	count  int
-	sum    float64
-	min    float64
-	max    float64
-	last   float64
-	lastTS int64
+type event struct {
+	ID     string             `json:"event_id"`
+	Sensor string             `json:"sensor"`
+	TS     int64              `json:"ts"`
+	Values map[string]float64 `json:"values"`
 }
-
-func (a *acc) add(v float64, ts int64) {
-	if a.count == 0 {
-		a.min, a.max = v, v
-	} else {
-		if v < a.min {
-			a.min = v
-		}
-		if v > a.max {
-			a.max = v
-		}
-	}
-	a.count++
-	a.sum += v
-	a.last = v
-	a.lastTS = ts
+type pending struct {
+	event event
+	ack   func()
 }
-
-func (a *acc) addFrom(b acc) {
-	if b.count == 0 {
-		return
-	}
-	if a.count == 0 {
-		*a = b
-		return
-	}
-	if b.min < a.min {
-		a.min = b.min
-	}
-	if b.max > a.max {
-		a.max = b.max
-	}
-	a.count += b.count
-	a.sum += b.sum
-	if b.lastTS > a.lastTS {
-		a.last = b.last
-		a.lastTS = b.lastTS
-	}
+type batch struct {
+	ID     string  `json:"id"`
+	Events []event `json:"events"`
 }
-
-func (a acc) avg() float64 {
-	if a.count == 0 {
-		return 0
-	}
-	return a.sum / float64(a.count)
-}
-
-// bucket is the serializable unit persisted to spill files and PG.
-type bucket struct {
-	Sensor   string  `json:"sensor"`
-	Metric   string  `json:"metric"`
-	Interval string  `json:"interval"`
-	TS       int64   `json:"ts"` // bucket start, unix seconds
-	Count    int     `json:"count"`
-	Avg      float64 `json:"avg"`
-	Min      float64 `json:"min"`
-	Max      float64 `json:"max"`
-	Last     float64 `json:"last"`
-}
-
-type bucketKey struct {
-	sensor string
-	metric string
-	start  int64
-}
-
-func (k bucketKey) String() string {
-	return fmt.Sprintf("%s|%s|%d", k.sensor, k.metric, k.start)
-}
-
-func (a acc) toBucket(sensor, metric string) bucket {
-	return bucket{
-		Sensor:   sensor,
-		Metric:   metric,
-		Interval: "15m",
-		TS:       0, // filled by caller
-		Count:    a.count,
-		Avg:      a.avg(),
-		Min:      a.min,
-		Max:      a.max,
-		Last:     a.last,
-	}
-}
-
-// spill manages one-file-per-bucket storage with atomic write+rename.
-// A file existing means "this bucket is pending flush to PG".
-type spill struct {
-	dir string
-	mu  sync.Mutex
-}
-
-func (s *spill) path(k bucketKey) string {
-	return filepath.Join(s.dir, fmt.Sprintf("15m-%s-%s-%d.jsonl", k.sensor, k.metric, k.start))
-}
-
-// upsert merges a into the bucket's file (creating or updating it atomically).
-func (s *spill) upsert(k bucketKey, a acc) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing, err := s.read(k)
-	if err != nil {
-		return err
-	}
-	merged := existing
-	merged.addFrom(a)
-	mergedParts := map[string]interface{}{
-		"sensor":   k.sensor,
-		"metric":   k.metric,
-		"interval": "15m",
-		"ts":       k.start,
-		"count":    merged.count,
-		"avg":      math.Round(merged.avg()*1000) / 1000,
-		"min":      math.Round(merged.min*1000) / 1000,
-		"max":      math.Round(merged.max*1000) / 1000,
-		"last":     math.Round(merged.last*1000) / 1000,
-	}
-	data, err := json.Marshal(mergedParts)
-	if err != nil {
-		return err
-	}
-
-	tmp := filepath.Join(s.dir, fmt.Sprintf(".tmp-%s", k.String()))
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	f, err := os.Open(tmp)
-	if err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, s.path(k)); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *spill) read(k bucketKey) (acc, error) {
-	raw, err := os.ReadFile(s.path(k))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return acc{min: math.Inf(1), max: math.Inf(-1)}, nil
-		}
-		return acc{}, err
-	}
-	var b struct {
-		Count int     `json:"count"`
-		Avg   float64 `json:"avg"`
-		Min   float64 `json:"min"`
-		Max   float64 `json:"max"`
-		Last  float64 `json:"last"`
-	}
-	if err := json.Unmarshal(raw, &b); err != nil {
-		return acc{}, fmt.Errorf("corrupt spill file %s: %w", s.path(k), err)
-	}
-	return acc{count: b.Count, sum: b.Avg * float64(b.Count), min: b.Min, max: b.Max, last: b.Last}, nil
-}
-
-// list returns all pending bucket keys, sorted by timestamp.
-func (s *spill) list() []bucketKey {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		log.Printf("spill list: %v", err)
-		return nil
-	}
-	var out []bucketKey
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, "15m-") {
-			continue
-		}
-		parts := strings.Split(strings.TrimSuffix(name, ".jsonl"), "-")
-		if len(parts) < 4 {
-			continue
-		}
-		var start int64
-		if _, err := fmt.Sscanf(parts[len(parts)-1], "%d", &start); err != nil {
-			continue
-		}
-		metric := strings.Join(parts[2:len(parts)-1], "-")
-		out = append(out, bucketKey{sensor: parts[1], metric: metric, start: start})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].start < out[j].start })
-	return out
-}
-
-func (s *spill) remove(k bucketKey) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return os.Remove(s.path(k))
-}
-
-// ingestorState holds the RAM bucket map and spill writer.
-type ingestorState struct {
-	mu    sync.Mutex
-	buck  map[bucketKey]acc
-	spill *spill
-}
-
-func (s *ingestorState) addReading(sensor, metric string, value float64, ts int64) {
-	start := (ts / bucketSecs) * bucketSecs
-	k := bucketKey{sensor: sensor, metric: metric, start: start}
-	now := time.Now().UTC().Unix()
-
-	// Late arrival for an already-closed window → straight to spill (merged).
-	if start+bucketSecs <= now-int64(gracePeriod.Seconds()) {
-		if err := s.spill.upsert(k, accWithValue(value, ts)); err != nil {
-			log.Printf("spill upsert %s: %v", k, err)
-		}
-		return
-	}
-
-	s.mu.Lock()
-	cur, ok := s.buck[k]
-	if !ok {
-		cur = acc{min: math.Inf(1), max: math.Inf(-1)}
-	}
-	cur.add(value, ts)
-	s.buck[k] = cur
-	s.mu.Unlock()
-}
-
-func accWithValue(v float64, ts int64) acc {
-	a := acc{min: math.Inf(1), max: math.Inf(-1)}
-	a.add(v, ts)
-	return a
-}
-
-// roll closes finished buckets: captures their acc, evicts from RAM,
-// then writes them to spill (which merges with any existing file).
-func (s *ingestorState) roll(now time.Time) {
-	cutoff := now.Unix() - int64(gracePeriod.Seconds())
-	closed := map[bucketKey]acc{}
-
-	s.mu.Lock()
-	for k, a := range s.buck {
-		if k.start+bucketSecs <= cutoff {
-			closed[k] = a
-		}
-	}
-	for k := range closed {
-		delete(s.buck, k)
-	}
-	s.mu.Unlock()
-
-	for k, a := range closed {
-		if err := s.spill.upsert(k, a); err != nil {
-			log.Printf("close bucket %s: %v", k, err)
-		}
-	}
-}
-
-func flushAll(s *ingestorState) {
-	s.mu.Lock()
-	keys := make([]bucketKey, 0, len(s.buck))
-	for k := range s.buck {
-		keys = append(keys, k)
-	}
-	s.mu.Unlock()
-	for _, k := range keys {
-		s.mu.Lock()
-		a, ok := s.buck[k]
-		s.mu.Unlock()
-		if ok {
-			if err := s.spill.upsert(k, a); err != nil {
-				log.Printf("flush bucket %s: %v", k, err)
-			}
-		}
-	}
-}
-
-// drain flushes pending spill files to PG and derives 1h rows.
-func drain(db *sql.DB, st *ingestorState) {
-	pending := st.spill.list()
-	if len(pending) == 0 {
-		return
-	}
-	if err := db.Ping(); err != nil {
-		log.Printf("PG unreachable (%v), %d spill files pending", err, len(pending))
-		return
-	}
-
-	var flushErr error
-	tx, err := db.Begin()
-	if err != nil {
-		log.Printf("drain begin: %v", err)
-		return
-	}
-	defer tx.Rollback()
-
-	done := map[bucketKey]bool{}
-	affectedHours := map[int64]bool{}
-	for _, k := range pending {
-		a, err := st.spill.read(k)
-		if err != nil {
-			log.Printf("drain read %s: %v", k, err)
-			continue
-		}
-		b := a.toBucket(k.sensor, k.metric)
-		b.TS = k.start
-		if err := upsert15m(tx, b); err != nil {
-			log.Printf("upsert %s: %v", k, err)
-			flushErr = err
-			break
-		}
-		done[k] = true
-		affectedHours[(k.start/3600)*3600] = true
-	}
-
-	if flushErr == nil && len(done) > 0 {
-		now := time.Now().UTC()
-		for hour := range affectedHours {
-			if hour+3600 <= now.Unix() {
-				if err := derive1h(tx, hour); err != nil {
-					log.Printf("derive1h %d: %v", hour, err)
-					flushErr = err
-					break
-				}
-			}
-		}
-	}
-
-	if flushErr == nil {
-		if err := tx.Commit(); err != nil {
-			log.Printf("drain commit: %v", err)
-			return
-		}
-		for k := range done {
-			if err := st.spill.remove(k); err != nil {
-				log.Printf("spill remove %s: %v", k, err)
-			}
-		}
-		if len(done) > 0 {
-			log.Printf("flushed %d buckets, %d spill files pending", len(done), len(pending)-len(done))
-		}
-	}
-}
-
-const upsert15mSQL = `
-INSERT INTO pi_sensor_data (sensor, metric, interval, ts, count, avg, min, max, last)
-VALUES ($1, $2, '15m', to_timestamp($3), $4, $5, $6, $7, $8)
-ON CONFLICT (sensor, metric, interval, ts) DO UPDATE SET
-  count = EXCLUDED.count,
-  avg   = EXCLUDED.avg,
-  min   = EXCLUDED.min,
-  max   = EXCLUDED.max,
-  last  = EXCLUDED.last`
-
-func upsert15m(tx *sql.Tx, b bucket) error {
-	_, err := tx.Exec(upsert15mSQL, b.Sensor, b.Metric, b.TS, b.Count, b.Avg, b.Min, b.Max, b.Last)
-	return err
-}
-
-const derive1hSQL = `
-INSERT INTO pi_sensor_data (sensor, metric, interval, ts, count, avg, min, max, last)
-SELECT sensor, metric, '1h', date_trunc('hour', ts),
-       sum(count), avg(avg), min(min), max(max),
-       (array_agg(last ORDER BY ts DESC))[1]
-FROM pi_sensor_data
-WHERE interval = '15m' AND ts >= $1 AND ts < $1 + interval '1 hour'
-GROUP BY sensor, metric, date_trunc('hour', ts)
-ON CONFLICT (sensor, metric, interval, ts) DO UPDATE SET
-  count = EXCLUDED.count,
-  avg   = EXCLUDED.avg,
-  min   = EXCLUDED.min,
-  max   = EXCLUDED.max,
-  last  = EXCLUDED.last`
-
-func derive1h(tx *sql.Tx, hourStart int64) error {
-	_, err := tx.Exec(derive1hSQL, time.Unix(hourStart, 0).UTC())
-	return err
-}
-
-func handleMessage(st *ingestorState) mqtt.MessageHandler {
-	return func(client mqtt.Client, msg mqtt.Message) {
-		var payload map[string]interface{}
-		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
-			log.Printf("bad payload on %s: %v", msg.Topic(), err)
-			return
-		}
-
-		sensor := "unknown"
-		if s, ok := payload["sensor"].(string); ok {
-			sensor = s
-		} else {
-			parts := strings.Split(msg.Topic(), "/")
-			if len(parts) > 1 {
-				sensor = parts[1]
-			}
-		}
-
-		// Payload ts wins; otherwise stamp receive time.
-		var ts int64
-		if f, ok := payload["ts"].(float64); ok {
-			ts = int64(f)
-		} else {
-			ts = time.Now().UTC().Unix()
-		}
-
-		for key, val := range payload {
-			if key == "event" || key == "sensor" || key == "ts" {
-				continue
-			}
-			if num, ok := val.(float64); ok {
-				st.addReading(sensor, key, num, ts)
-			}
-		}
-	}
-}
-
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-	if err := os.MkdirAll(spillDir, 0755); err != nil {
-		log.Fatalf("spill dir: %v", err)
-	}
-
-	st := &ingestorState{buck: make(map[bucketKey]acc), spill: &spill{dir: spillDir}}
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		pgHost, pgPort, pgUser, pgPass, pgDB)
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
-	db.SetMaxOpenConns(3)
-	db.SetConnMaxLifetime(10 * time.Minute)
-
-	opts := mqtt.NewClientOptions().AddBroker(mqttBroker).SetClientID("db-ingestor")
-	opts.OnConnect = func(c mqtt.Client) {
-		for _, t := range mqttTopics {
-			if tok := c.Subscribe(t, 0, handleMessage(st)); tok.Wait() && tok.Error() != nil {
-				log.Printf("subscribe %s: %v", t, tok.Error())
-			}
-		}
-		log.Printf("subscribed to %v", mqttTopics)
-	}
-	client := mqtt.NewClient(opts)
-	if tok := client.Connect(); tok.Wait() && tok.Error() != nil {
-		log.Fatalf("mqtt connect: %v", tok.Error())
-	}
-
-	// Roller: close finished 15-min buckets into spill files.
-	go func() {
-		t := time.NewTicker(rollEvery)
-		defer t.Stop()
-		for now := range t.C {
-			st.roll(now.UTC())
-		}
-	}()
-
-	// Drainer: flush pending spill files to PG, then derive 1h.
-	go func() {
-		t := time.NewTicker(drainInterval)
-		defer t.Stop()
-		for range t.C {
-			drain(db, st)
-		}
-	}()
-
-	// Health/status endpoint (500 when PG unreachable).
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := db.Ping(); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "pg unreachable: %v\n", err)
-			return
-		}
-		fmt.Fprintf(w, "pending spill files: %d\n", len(st.spill.list()))
-	})
-	go func() {
-		log.Printf("http listening on %s", httpAddr)
-		http.ListenAndServe(httpAddr, nil)
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	log.Println("shutting down, closing buckets...")
-	closeNow := time.Now().UTC()
-	st.roll(closeNow)
-	flushAll(st)
-	drain(db, st)
-	client.Disconnect(250)
-	log.Println("done.")
+type spool struct {
+	dir  string
+	mu   sync.Mutex
+	lock *os.File
 }
 
 func env(k, d string) string {
@@ -547,24 +51,346 @@ func env(k, d string) string {
 	}
 	return d
 }
-
-func splitEnv(k, d string) []string {
-	raw := env(k, d)
-	var out []string
-	for _, s := range strings.Split(raw, ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
+func newID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b[:])
+}
+func openSpool(dir string) (*spool, error) {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another spool writer is active: %w", err)
+	}
+	old, _ := filepath.Glob(filepath.Join(dir, "15m-*.jsonl"))
+	if len(old) > 0 {
+		f.Close()
+		return nil, fmt.Errorf("legacy spill files require migration before startup; originals preserved")
+	}
+	return &spool{dir: dir, lock: f}, nil
+}
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+func (s *spool) checkpoint(items []pending) error {
+	if len(items) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := batch{ID: newID()}
+	for _, p := range items {
+		b.Events = append(b.Events, p.event)
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(s.dir, ".checkpoint-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err = f.Write(raw); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = os.Rename(tmp, filepath.Join(s.dir, "batch-"+b.ID+".json")); err != nil {
+		return err
+	}
+	if err = syncDir(s.dir); err != nil {
+		return err
+	}
+	for _, p := range items {
+		p.ack()
+	}
+	return nil
+}
+func parseEvent(raw []byte, now time.Time) (event, error) {
+	if len(raw) > 4096 {
+		return event{}, fmt.Errorf("payload exceeds limit")
+	}
+	var p map[string]any
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return event{}, err
+	}
+	sensor, _ := p["sensor"].(string)
+	keys := map[string][]string{"dht11": {"temp_c", "humidity_pct"}, "ldr": {"analog"}, "scale": {"weight_kg"}}
+	allowed, ok := keys[sensor]
+	if !ok {
+		return event{}, fmt.Errorf("unsupported sensor")
+	}
+	ts, ok := p["ts"].(float64)
+	if !ok {
+		return event{}, fmt.Errorf("missing source timestamp")
+	}
+	if ts < float64(now.Add(-7*24*time.Hour).Unix()) || ts > float64(now.Add(5*time.Minute).Unix()) {
+		return event{}, fmt.Errorf("timestamp outside accepted window")
+	}
+	id, _ := p["event_id"].(string)
+	if len(id) > 128 {
+		return event{}, fmt.Errorf("event ID too long")
+	}
+	if id == "" {
+		id = newID()
+	} // Legacy publishers: at-least-once, until upgraded.
+	e := event{ID: id, Sensor: sensor, TS: int64(ts), Values: map[string]float64{}}
+	for _, key := range allowed {
+		if v, ok := p[key].(float64); ok && !math.IsInf(v, 0) && !math.IsNaN(v) {
+			e.Values[key] = v
 		}
 	}
-	return out
+	if len(e.Values) == 0 {
+		return event{}, fmt.Errorf("no sensor values")
+	}
+	return e, nil
 }
 
-func envDuration(k, d string) time.Duration {
-	if v := os.Getenv(k); v != "" {
-		if dur, err := time.ParseDuration(v); err == nil {
-			return dur
+const addSQL = `INSERT INTO pi_sensor_data(sensor,metric,interval,ts,count,avg,min,max,last,sum,last_ts)
+VALUES($1,$2,'15m',to_timestamp($3),1,$4,$4,$4,$4,$4,to_timestamp($5))
+ON CONFLICT(sensor,metric,interval,ts) DO UPDATE SET
+ count=pi_sensor_data.count+1,
+ avg=(pi_sensor_data.sum+EXCLUDED.sum)/(pi_sensor_data.count+1),
+ sum=pi_sensor_data.sum+EXCLUDED.sum,
+ min=LEAST(pi_sensor_data.min,EXCLUDED.min),max=GREATEST(pi_sensor_data.max,EXCLUDED.max),
+ last=CASE WHEN EXCLUDED.last_ts>=pi_sensor_data.last_ts THEN EXCLUDED.last ELSE pi_sensor_data.last END,
+ last_ts=GREATEST(pi_sensor_data.last_ts,EXCLUDED.last_ts)`
+const hourlySQL = `INSERT INTO pi_sensor_data(sensor,metric,interval,ts,count,avg,min,max,last,sum,last_ts)
+SELECT sensor,metric,'1h',date_trunc('hour',ts),sum(count)::integer,sum(sum)/sum(count),min(min),max(max),
+ (array_agg(last ORDER BY last_ts DESC))[1],sum(sum),max(last_ts)
+FROM pi_sensor_data WHERE interval='15m' AND ts<date_trunc('hour',now())
+ AND ts>=date_trunc('hour',now())-interval '8 days'
+GROUP BY sensor,metric,date_trunc('hour',ts)
+ON CONFLICT(sensor,metric,interval,ts) DO UPDATE SET count=EXCLUDED.count,avg=EXCLUDED.avg,min=EXCLUDED.min,max=EXCLUDED.max,last=EXCLUDED.last,sum=EXCLUDED.sum,last_ts=EXCLUDED.last_ts
+WHERE (pi_sensor_data.count,pi_sensor_data.sum,pi_sensor_data.last_ts) IS DISTINCT FROM (EXCLUDED.count,EXCLUDED.sum,EXCLUDED.last_ts)`
+
+func applyBatch(ctx context.Context, tx *sql.Tx, b batch) error {
+	result, err := tx.ExecContext(ctx, "INSERT INTO pi_sensor_ingest_batches(batch_id) VALUES($1) ON CONFLICT DO NOTHING", b.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return nil
+	}
+	for _, e := range b.Events {
+		result, err = tx.ExecContext(ctx, "INSERT INTO pi_sensor_ingest_events(event_id) VALUES($1) ON CONFLICT DO NOTHING", e.ID)
+		if err != nil {
+			return err
+		}
+		n, _ = result.RowsAffected()
+		if n == 0 {
+			continue
+		}
+		for metric, value := range e.Values {
+			if _, err = tx.ExecContext(ctx, addSQL, e.Sensor, metric, e.TS/900*900, value, e.TS); err != nil {
+				return err
+			}
 		}
 	}
-	dur, _ := time.ParseDuration(d)
-	return dur
+	return nil
+}
+func (s *spool) drain(db *sql.DB) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	files, err := filepath.Glob(filepath.Join(s.dir, "batch-*.json"))
+	if err != nil {
+		return err
+	}
+	if len(files) > 60 {
+		files = files[:60]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "SET LOCAL TIME ZONE 'UTC'"); err != nil {
+		return err
+	}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var b batch
+		if err = json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("invalid spool %s: %w", path, err)
+		}
+		if b.ID == "" {
+			return fmt.Errorf("empty batch identity")
+		}
+		if err = applyBatch(ctx, tx, b); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, hourlySQL); err != nil {
+		return err
+	}
+	// Event acceptance is limited to seven days; retain deduplication beyond that.
+	if _, err = tx.ExecContext(ctx, "DELETE FROM pi_sensor_ingest_events WHERE committed_at<now()-interval '9 days'"); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	for _, path := range files {
+		if err = os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return syncDir(s.dir)
+}
+
+func main() {
+	s, err := openSpool(env("SPILL_DIR", "/var/lib/db-ingestor/spill"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.lock.Close()
+	u := url.URL{Scheme: "postgres", Host: env("PG_HOST", "postgres.database.svc.cluster.local") + ":" + env("PG_PORT", "5432"), Path: env("PG_DB", "pi_mix"), User: url.UserPassword(env("PG_USER", "pi_mix_writer"), os.Getenv("PG_PASSWORD"))}
+	q := u.Query()
+	q.Set("sslmode", env("PG_SSLMODE", "disable"))
+	q.Set("connect_timeout", "5")
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("postgres", u.String())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(2)
+	db.SetConnMaxLifetime(10 * time.Minute)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	queue := make(chan pending, 2000)
+	var diskOK atomic.Bool
+	diskOK.Store(true)
+	opts := mqtt.NewClientOptions().AddBroker(env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")).SetClientID(env("MQTT_CLIENT_ID", "pi-mix-postgres"))
+	opts.SetCleanSession(false).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
+	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
+	opts.OnConnect = func(c mqtt.Client) {
+		for _, topic := range strings.Split(env("MQTT_TOPIC", "pi/dht11,pi/ldr,pi/scale"), ",") {
+			t := c.Subscribe(strings.TrimSpace(topic), 1, func(_ mqtt.Client, m mqtt.Message) {
+				e, err := parseEvent(m.Payload(), time.Now())
+				if err != nil {
+					m.Ack()
+					return
+				}
+				select {
+				case queue <- pending{e, m.Ack}:
+				case <-ctx.Done():
+				}
+			})
+			if !t.WaitTimeout(5*time.Second) || t.Error() != nil {
+				log.Print("MQTT subscription failed")
+			}
+		}
+	}
+	client := mqtt.NewClient(opts)
+	client.Connect()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !client.IsConnected() || !diskOK.Load() || len(queue) == cap(queue) {
+			http.Error(w, "cannot ingest safely", 503)
+			return
+		}
+		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		c, done := context.WithTimeout(r.Context(), 2*time.Second)
+		defer done()
+		err := db.PingContext(c)
+		files, _ := filepath.Glob(filepath.Join(s.dir, "batch-*.json"))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"mqtt_connected": client.IsConnected(), "postgres_connected": err == nil, "pending_batches": len(files), "checkpoint_ok": diskOK.Load()})
+	})
+	server := &http.Server{Addr: env("HTTP_ADDR", ":8090"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Print(err)
+			cancel()
+		}
+	}()
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for {
+			if err := s.drain(db); err != nil {
+				log.Printf("database retry: %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	tick := time.NewTicker(10 * time.Second)
+	defer tick.Stop()
+	items := make([]pending, 0, 100)
+	checkpoint := func() {
+		if err := s.checkpoint(items); err != nil {
+			diskOK.Store(false)
+			log.Printf("checkpoint failed (data unacknowledged): %v", err)
+		} else {
+			diskOK.Store(true)
+			items = items[:0]
+		}
+	}
+run:
+	for {
+		input := queue
+		if len(items) >= 2000 {
+			input = nil
+		}
+		select {
+		case p := <-input:
+			items = append(items, p)
+		case <-tick.C:
+			checkpoint()
+		case <-ctx.Done():
+			break run
+		}
+	}
+	// Stop producers, include all already queued events, then persist before exit.
+	client.Disconnect(250)
+	for {
+		select {
+		case p := <-queue:
+			items = append(items, p)
+		default:
+			goto flushed
+		}
+	}
+flushed:
+	checkpoint()
+	<-drainDone
+	shutdown, done := context.WithTimeout(context.Background(), 3*time.Second)
+	defer done()
+	server.Shutdown(shutdown)
 }

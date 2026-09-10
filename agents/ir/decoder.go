@@ -17,9 +17,9 @@ type Frame struct {
 }
 
 var (
-	ErrNoStart       = errors.New("no valid NEC start pattern found")
-	ErrShortFrame    = errors.New("frame ended before 32 bits")
-	ErrInvalidPulse  = errors.New("pulse width out of NEC range")
+	ErrNoStart           = errors.New("no valid NEC start pattern found")
+	ErrShortFrame        = errors.New("frame ended before 32 bits")
+	ErrInvalidPulse      = errors.New("pulse width out of NEC range")
 	ErrInsufficientEdges = errors.New("need at least 4 edges for a valid frame")
 )
 
@@ -29,11 +29,11 @@ const (
 	necStartHighMin = 3500 * time.Microsecond
 	necStartHighMax = 5500 * time.Microsecond
 
-	necBitLowMin     = 300 * time.Microsecond
-	necBitLowMax     = 900 * time.Microsecond
-	necBitHighZero   = 1200 * time.Microsecond
-	necBitHighMin    = 300 * time.Microsecond
-	necBitHighMax    = 2000 * time.Microsecond
+	necBitLowMin   = 300 * time.Microsecond
+	necBitLowMax   = 900 * time.Microsecond
+	necBitHighZero = 1200 * time.Microsecond
+	necBitHighMin  = 300 * time.Microsecond
+	necBitHighMax  = 2000 * time.Microsecond
 )
 
 type segment struct {
@@ -100,7 +100,7 @@ func decodeBits(segs []segment) ([]int, bool) {
 		if !isBitLow(lo) {
 			return nil, false
 		}
-		if hi.low {
+		if hi.low || hi.dur < necBitHighMin || hi.dur > necBitHighMax {
 			return nil, false
 		}
 		if hi.dur >= necBitHighZero {

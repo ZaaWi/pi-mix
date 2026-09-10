@@ -4,6 +4,33 @@ metadata:
   name: mosquitto-config
   namespace: iot
 data:
-  mosquitto.conf: |
-    listener 1883
-    allow_anonymous true
+  mosquitto.conf: 'listener 1883
+
+    allow_anonymous false
+
+    password_file /mosquitto/auth/passwords
+
+    acl_file /mosquitto/config/acl
+
+    persistence false
+
+    max_queued_messages 10000
+
+    max_queued_bytes 16777216
+
+    memory_limit 67108864
+
+    message_size_limit 4096
+
+    log_type error
+
+    log_type warning
+
+    connection_messages false
+
+    '
+  acl: 'user pi-mix
+
+    topic readwrite pi/#
+
+    '

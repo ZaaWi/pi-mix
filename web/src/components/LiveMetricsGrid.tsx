@@ -9,10 +9,10 @@ interface LiveMetricsGridProps {
 }
 
 export const LiveMetricsGrid: React.FC<LiveMetricsGridProps> = ({ state, pulses }) => {
-  const dht = state.dht11 || {};
-  const ldr = state.ldr || {};
-  const scale = state.scale || {};
-  const ir = state.ir || {};
+  const dht: Partial<NonNullable<SensorData['dht11']>> = state.dht11 || {};
+  const ldr: Partial<NonNullable<SensorData['ldr']>> = state.ldr || {};
+  const scale: Partial<NonNullable<SensorData['scale']>> = state.scale || {};
+  const ir: Partial<NonNullable<SensorData['ir']>> = state.ir || {};
 
   return (
     <div className="grid">

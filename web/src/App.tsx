@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import './index.css';
 import { LiveMetricsGrid } from './components/LiveMetricsGrid';
 import { HistoryCharts } from './components/HistoryCharts';
@@ -8,6 +8,16 @@ function App() {
   const [state, setState] = useState<SensorData>({});
   const [pulses, setPulses] = useState<Record<string, boolean>>({});
   const [isConnected, setIsConnected] = useState(false);
+  const [fresh, setFresh] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    const refresh = () => fetch('/api/status', {signal: controller.signal})
+      .then(r => {if(!r.ok) throw new Error('status unavailable');return r.json();})
+      .then(s => setFresh(s.mqtt_connected && !s.sensors?.dht11?.stale && !s.sensors?.ldr?.stale))
+      .catch(() => {if(!controller.signal.aborted) setFresh(false);});
+    refresh(); const interval = setInterval(refresh, 5000);
+    return () => {controller.abort();clearInterval(interval);};
+  }, []);
 
   useEffect(() => {
     fetch('/api/state')
@@ -44,9 +54,9 @@ function App() {
         <h1>pi-mix telemetry</h1>
         <p>Live edge-to-cloud sensor metrics</p>
         
-        <div className={`status-badge ${isConnected ? 'status-live' : 'status-offline'}`}>
+        <div className={`status-badge ${isConnected && fresh ? 'status-live' : 'status-offline'}`}>
           <div className="status-dot"></div>
-          {isConnected ? 'STREAMING LIVE' : 'RECONNECTING...'}
+          {!isConnected ? 'RECONNECTING...' : fresh ? 'STREAMING LIVE' : 'SENSOR DATA STALE'}
         </div>
       </header>
 

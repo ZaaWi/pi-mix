@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: serial-bridge
   namespace: iot
+  labels:
+    app: serial-bridge
 spec:
   replicas: 1
   selector:
@@ -14,15 +16,42 @@ spec:
         app: serial-bridge
     spec:
       containers:
-        - name: bridge
-          image: mhmdzawi/pi-mix-serial-bridge:413788d8d951fc17d8d30648e4deeccc74ca8864
-          imagePullPolicy: Always
-          securityContext:
-            privileged: true
-          env:
-            - name: BRIDGE_SERIAL_PORT
-              value: /dev/ttyAMA0
-            - name: BRIDGE_PORT
-              value: "9600"
-          ports:
-            - containerPort: 9600
+      - name: bridge
+        image: mhmdzawi/pi-mix-serial-bridge:413788d8d951fc17d8d30648e4deeccc74ca8864
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        env:
+        - name: BRIDGE_SERIAL_PORT
+          value: /dev/ttyAMA0
+        - name: BRIDGE_PORT
+          value: '9600'
+        - name: BRIDGE_CONTROL_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bridge-control
+              key: token
+        - name: BRIDGE_BAUD
+          value: '9600'
+        ports:
+        - containerPort: 9600
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        readinessProbe:
+          exec:
+            command:
+            - /bridge
+            - -check
+          timeoutSeconds: 7
+          periodSeconds: 15
+          failureThreshold: 3
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+  strategy:
+    type: Recreate

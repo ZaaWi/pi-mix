@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: serial-bridge-access
+  namespace: iot
+spec:
+  podSelector:
+    matchLabels:
+      app: serial-bridge
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: app
+          operator: In
+          values:
+          - dht11
+          - ldr
+          - ir
+          - firmware-flasher
+    ports:
+    - protocol: TCP
+      port: 9600

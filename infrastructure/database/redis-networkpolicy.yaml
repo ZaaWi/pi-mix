@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-access
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: database
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: iot
+    - namespaceSelector:
+        matchLabels:
+          homelab/database-access: 'true'
+    ports:
+    - protocol: TCP
+      port: 6379

@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: firmware-flasher
+  namespace: iot
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: flasher
+        image: mhmdzawi/pi-mix-firmware:413788d8d951fc17d8d30648e4deeccc74ca8864
+        env:
+        - name: BRIDGE_CONTROL_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bridge-control
+              key: token
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+      automountServiceAccountToken: false
+    metadata:
+      labels:
+        app: firmware-flasher
+  backoffLimit: 1

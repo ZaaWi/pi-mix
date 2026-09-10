@@ -1,28 +1,19 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
-
-	mqtt "github.com/eclipse/paho.mqtt.golang"
-)
-
-var (
-	mqttBroker = env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")
-	mqttTopic  = env("MQTT_TOPIC", "pi/#")
-	// VictoriaMetrics Prometheus import endpoint
-	vmAgentURL = env("VMAGENT_URL", "http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus")
-	batchSize  = 100
-	flushIntv  = 10 * time.Second
 )
 
 func env(k, d string) string {
@@ -32,115 +23,153 @@ func env(k, d string) string {
 	return d
 }
 
-// MetricsBuffer batches strings in memory
-type MetricsBuffer struct {
+var vmAgentURL = env("VMAGENT_URL", "http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus")
+var transport = &http.Client{Timeout: 8 * time.Second}
+
+type delivery struct {
 	lines []string
-	mu    sync.Mutex
+	ack   func()
 }
 
-func (b *MetricsBuffer) Add(line string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.lines = append(b.lines, line)
-}
-
-func (b *MetricsBuffer) Flush() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if len(b.lines) == 0 {
-		return nil
+func metricLines(raw []byte, now time.Time) ([]string, error) {
+	if len(raw) > 4096 {
+		return nil, fmt.Errorf("payload too large")
 	}
-	lines := b.lines
-	b.lines = make([]string, 0, batchSize)
-	return lines
+	var p map[string]any
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, err
+	}
+	sensor, _ := p["sensor"].(string)
+	allowed := map[string][]string{"dht11": {"temp_c", "humidity_pct"}, "ldr": {"analog"}, "scale": {"weight_kg"}, "ir": {"bits"}}
+	keys, ok := allowed[sensor]
+	if !ok {
+		return nil, fmt.Errorf("unknown sensor")
+	}
+	ts := float64(now.Unix())
+	if v, ok := p["ts"].(float64); ok {
+		ts = v
+	}
+	if ts < float64(now.Add(-7*24*time.Hour).Unix()) || ts > float64(now.Add(5*time.Minute).Unix()) {
+		return nil, fmt.Errorf("timestamp outside accepted range")
+	}
+	var lines []string
+	for _, key := range keys {
+		if v, ok := p[key].(float64); ok && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			lines = append(lines, fmt.Sprintf("sensor_%s{sensor=%q} %g %d", key, sensor, v, int64(ts*1000)))
+		}
+	}
+	return lines, nil
+}
+
+func push(ctx context.Context, batch []delivery) error {
+	var lines []string
+	for _, d := range batch {
+		lines = append(lines, d.lines...)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vmAgentURL, strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := transport.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("vmagent returned %s", resp.Status)
+	}
+	return nil
+}
+
+// ACK only after vmagent accepts the entire batch; retries retain source times.
+func consume(ctx context.Context, q <-chan delivery) {
+	timer := time.NewTicker(10 * time.Second)
+	defer timer.Stop()
+	batch := make([]delivery, 0, 100)
+	flush := func() bool {
+		if len(batch) == 0 {
+			return true
+		}
+		for {
+			if err := push(ctx, batch); err == nil {
+				for _, d := range batch {
+					d.ack()
+				}
+				batch = batch[:0]
+				return true
+			} else {
+				log.Printf("history delivery retry: %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}
+	for {
+		select {
+		case d := <-q:
+			batch = append(batch, d)
+			if len(batch) >= 100 && !flush() {
+				return
+			}
+		case <-timer.C:
+			if !flush() {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func main() {
-	buffer := &MetricsBuffer{lines: make([]string, 0, batchSize)}
-
-	opts := mqtt.NewClientOptions().AddBroker(mqttBroker).SetClientID("ingestor")
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	queue := make(chan delivery, 10000)
+	opts := mqtt.NewClientOptions().AddBroker(env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")).SetClientID(env("MQTT_CLIENT_ID", "pi-mix-history"))
+	opts.SetCleanSession(false).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
+	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.OnConnect = func(c mqtt.Client) {
-		log.Printf("Connected to MQTT broker: %s", mqttBroker)
-		if token := c.Subscribe(mqttTopic, 0, handleMessage(buffer)); token.Wait() && token.Error() != nil {
-			log.Fatalf("Failed to subscribe: %v", token.Error())
+		t := c.Subscribe("pi/#", 1, func(_ mqtt.Client, m mqtt.Message) {
+			lines, err := metricLines(m.Payload(), time.Now())
+			if err != nil || len(lines) == 0 {
+				m.Ack()
+				return
+			}
+			select {
+			case queue <- delivery{lines, m.Ack}:
+			case <-ctx.Done():
+			}
+		})
+		if !t.WaitTimeout(5*time.Second) || t.Error() != nil {
+			log.Print("MQTT subscribe failed")
 		}
-		log.Printf("Subscribed to topic: %s", mqttTopic)
 	}
-
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatalf("Error connecting to MQTT: %v", token.Error())
-	}
-
-	// Background ticker to flush metrics periodically to save SD card
-	ticker := time.NewTicker(flushIntv)
-	go func() {
-		for range ticker.C {
-			flushMetrics(buffer)
-		}
-	}()
-
-	// Listen for OS signals to trigger a graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	log.Println("Shutting down, flushing remaining buffer...")
-	client.Disconnect(250)
-	flushMetrics(buffer) // final flush
-	log.Println("Shutdown complete.")
-}
-
-func handleMessage(buffer *MetricsBuffer) mqtt.MessageHandler {
-	return func(client mqtt.Client, msg mqtt.Message) {
-		var payload map[string]interface{}
-		if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
-			log.Printf("Failed to unmarshal payload: %v", err)
+	client.Connect()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !client.IsConnected() || len(queue) == cap(queue) {
+			http.Error(w, "ingestion unavailable", 503)
 			return
 		}
-
-		sensorName := "unknown"
-		if s, ok := payload["sensor"].(string); ok {
-			sensorName = s
-		} else {
-			// Fallback: Parse from topic (e.g., pi/dht11)
-			parts := strings.Split(msg.Topic(), "/")
-			if len(parts) > 1 {
-				sensorName = parts[1]
-			}
+		fmt.Fprintln(w, "ok")
+	})
+	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Printf("health server: %v", err)
+			cancel()
 		}
-
-		for key, val := range payload {
-			// Ignore structural fields, only grab telemetry
-			if key == "event" || key == "sensor" || key == "ts" {
-				continue
-			}
-			if num, ok := val.(float64); ok {
-				// Convert to Prometheus text format: sensor_temperature_c{sensor="dht11"} 27.8
-				line := fmt.Sprintf("sensor_%s{sensor=\"%s\"} %f", key, sensorName, num)
-				buffer.Add(line)
-			}
-		}
-	}
-}
-
-func flushMetrics(buffer *MetricsBuffer) {
-	lines := buffer.Flush()
-	if len(lines) == 0 {
-		return
-	}
-
-	data := strings.Join(lines, "\n") + "\n"
-	resp, err := http.Post(vmAgentURL, "text/plain", bytes.NewBufferString(data))
-	if err != nil {
-		log.Printf("Failed to push metrics to vmagent: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		log.Printf("vmagent returned non-200 status: %s", resp.Status)
-	} else {
-		log.Printf("Successfully pushed %d metrics to vmagent", len(lines))
-	}
+	}()
+	consume(ctx, queue)
+	client.Disconnect(250)
+	shutdown, done := context.WithTimeout(context.Background(), 3*time.Second)
+	defer done()
+	server.Shutdown(shutdown)
 }

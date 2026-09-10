@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: mosquitto
   namespace: iot
+  labels:
+    app: mosquitto
 spec:
   replicas: 1
   selector:
@@ -14,26 +16,45 @@ spec:
         app: mosquitto
     spec:
       containers:
-        - name: mosquitto
-          image: eclipse-mosquitto:2
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 1883
-              name: mqtt
-          volumeMounts:
-            - name: config
-              mountPath: /mosquitto/config
-          livenessProbe:
-            tcpSocket:
-              port: 1883
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          readinessProbe:
-            tcpSocket:
-              port: 1883
-            initialDelaySeconds: 5
-            periodSeconds: 10
-      volumes:
+      - name: mosquitto
+        image: eclipse-mosquitto:2
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 1883
+          name: mqtt
+        volumeMounts:
         - name: config
-          configMap:
-            name: mosquitto-config
+          mountPath: /mosquitto/config
+        - name: auth
+          mountPath: /mosquitto/auth
+          readOnly: true
+        livenessProbe:
+          tcpSocket:
+            port: 1883
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 1883
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        env: []
+      volumes:
+      - name: config
+        configMap:
+          name: mosquitto-config
+      - name: auth
+        secret:
+          secretName: mosquitto-auth
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+  strategy:
+    type: Recreate

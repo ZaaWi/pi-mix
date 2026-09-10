@@ -1,0 +1,14 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: bridge-control
+  namespace: iot
+spec:
+  encryptedData:
+    token: AgCCUmV5GreSWBZJaKAkg4FH16MBvGMHbuM5/ysDT/qIFR+L9Jpip+4/0vVQBL8q7DCi7zKG70S1NaP59/By2BGyU61Mdhzfkby6EknkB6gw3/1nRZKDvoo6q9e1RM3sO6VwYxof3xdTu1z6MhQ79NyYXCI4PC2AF4tcfOXhpdl+OXUSZmA0E4jxVo0gBcCYt3oQ5mFtTJF4O3T1nBq7xtHJq6IPfBez+QaWCtlEYo9GMd1gJRRcyLK9tzl6IbhdqkkcwMb+MAquPZ1cThyrxJ/g99jGrGWdXsq5lLF06EBuUMVgpQhSona64excCy2VZmsk5uXMEs3xTzRbLlyUBeGdbHE1QjR118YESLqtlYL/w2/HlHm+3Tzh9/ayHllhSW4Hi12ermvDr+DZd48eutavjhxDCXWp/VaUlglAxBWsUwZJsKRa2z9UTaFDIJ6EjLRiQdZRL3bM21pkgAz2Q/BK8Ht5KxlPk6dg4lL9kVH7yRBPo/tBgoCHMaVWcS+gOX4QkayeTxZqRpxSvQRmyVOQla/q0FQiNBAt4z99kpbjFN7B2UJXYbso0ly3SWUdeM8oLCKI/tqhWu0WurHPgOQT6vvszY+zBBYmi+Otys60aADJYkzcEP0nXIQo6+JEo9PRjZG9ZTm5UA0mXRE6dexiSXhJA/p5fKdDtwbhj0H+FUVYo+CLAXw+gCKvYFDoFNAvtbG7u2YMiyG2nJevxAKM8Bq+/4hnAS/uQUSqYBkZAvrg2eGl1D6KdGMq1kBMdZfxrNVPK/kq+70Zqtmdruka
+  template:
+    metadata:
+      name: bridge-control
+      namespace: iot
+    type: Opaque

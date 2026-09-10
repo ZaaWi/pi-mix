@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -17,17 +19,17 @@ import (
 	"syscall"
 	"time"
 
-	"go.bug.st/serial"
 	"github.com/warthog618/gpiod"
+	"go.bug.st/serial"
 )
 
 var (
-	serialPort    = env("BRIDGE_SERIAL_PORT", "/dev/ttyAMA0")
-	bindAddr      = env("BRIDGE_BIND", "0.0.0.0")
-	bindPort      = env("BRIDGE_PORT", "9600")
-	baudRate      = envInt("BRIDGE_BAUD", 9600)
-	readTimeout   = envInt("BRIDGE_READ_TIMEOUT", 2)
-	flashLEDPin   = envInt("FLASH_LED_PIN", 22)
+	serialPort     = env("BRIDGE_SERIAL_PORT", "/dev/ttyAMA0")
+	bindAddr       = env("BRIDGE_BIND", "0.0.0.0")
+	bindPort       = env("BRIDGE_PORT", "9600")
+	baudRate       = envInt("BRIDGE_BAUD", 9600)
+	readTimeout    = envInt("BRIDGE_READ_TIMEOUT", 2)
+	flashLEDPin    = envInt("FLASH_LED_PIN", 22)
 	flashLEDInvert = env("FLASH_LED_INVERT", "") != ""
 )
 
@@ -83,7 +85,9 @@ func (b *Bridge) cmd(command string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.port == nil {
-		return "", fmt.Errorf("port not open")
+		if err := b.open(); err != nil {
+			return "", err
+		}
 	}
 
 	sp, ok := b.port.(serial.Port)
@@ -114,6 +118,7 @@ func readBurst(p io.ReadWriteCloser, timeout time.Duration) (string, error) {
 		return "", fmt.Errorf("timeout: no response")
 	}
 
+	deadline := time.Now().Add(timeout)
 	var out bytes.Buffer
 	out.Write(buf[:n])
 
@@ -121,6 +126,9 @@ func readBurst(p io.ReadWriteCloser, timeout time.Duration) (string, error) {
 		sp.SetReadTimeout(100 * time.Millisecond)
 	}
 	for {
+		if time.Now().After(deadline) || out.Len() > 4096 {
+			return "", fmt.Errorf("serial response exceeded deadline or size limit")
+		}
 		n, err := p.Read(buf)
 		if err != nil || n == 0 {
 			break
@@ -183,6 +191,13 @@ func (b *Bridge) flash(hexData []byte) error {
 		b.port = nil
 	}
 
+	defer func() {
+		if b.port == nil {
+			if err := b.open(); err != nil {
+				log.Printf("reopen after flash: %v", err)
+			}
+		}
+	}()
 	tmpFile := "/tmp/firmware.hex"
 	if err := os.WriteFile(tmpFile, hexData, 0644); err != nil {
 		return fmt.Errorf("write hex: %w", err)
@@ -247,7 +262,9 @@ func respond(conn net.Conn, id any, result any, code int, msg string) {
 
 func handle(conn net.Conn, b *Bridge) {
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(90 * time.Second))
 	sc := bufio.NewScanner(conn)
+	sc.Buffer(make([]byte, 4096), 128*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -267,6 +284,12 @@ func handleRPC(conn net.Conn, req *Request, b *Bridge) {
 		respond(conn, req.ID, nil, code, msg)
 	}
 
+	if req.Method == "flash_firmware" || req.Method == "led_on" || req.Method == "led_off" {
+		if !authorized(req.Params) {
+			writeErr(-32003, "control authorization required")
+			return
+		}
+	}
 	switch req.Method {
 	case "ping", "ping_dht11", "ping_ldr":
 		r, err := b.cmd("PING")
@@ -423,7 +446,43 @@ func parseAll(s string) map[string]any {
 	return result
 }
 
+func authorized(params json.RawMessage) bool {
+	expected := os.Getenv("BRIDGE_CONTROL_TOKEN")
+	var p struct {
+		Token string `json:"control_token"`
+	}
+	return expected != "" && json.Unmarshal(params, &p) == nil && subtle.ConstantTimeCompare([]byte(expected), []byte(p.Token)) == 1
+}
+
+func check() error {
+	c, err := net.DialTimeout("tcp", "127.0.0.1:"+bindPort, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	if err = json.NewEncoder(c).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "ping"}); err != nil {
+		return err
+	}
+	var r Response
+	if err = json.NewDecoder(c).Decode(&r); err != nil {
+		return err
+	}
+	if r.Error != nil {
+		return fmt.Errorf("%s", r.Error.Message)
+	}
+	return nil
+}
+
 func main() {
+	probe := flag.Bool("check", false, "check Arduino communication without changing outputs")
+	flag.Parse()
+	if *probe {
+		if err := check(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	b := &Bridge{}

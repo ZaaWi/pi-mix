@@ -16,11 +16,48 @@ spec:
         app: ingestor
     spec:
       containers:
-        - name: ingestor
-          image: mhmdzawi/pi-mix-ingestor:413788d8d951fc17d8d30648e4deeccc74ca8864
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: MQTT_BROKER
-              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
-            - name: VMAGENT_URL
-              value: "http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus"
+      - name: ingestor
+        image: mhmdzawi/pi-mix-ingestor:413788d8d951fc17d8d30648e4deeccc74ca8864
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MQTT_BROKER
+          value: tcp://mosquitto.iot.svc.cluster.local:1883
+        - name: VMAGENT_URL
+          value: http://vmagent.iot.svc.cluster.local:8429/api/v1/import/prometheus
+        - name: MQTT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: username
+        - name: MQTT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: password
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          timeoutSeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          timeoutSeconds: 3
+          periodSeconds: 20
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: vaio-server
+  strategy:
+    type: Recreate

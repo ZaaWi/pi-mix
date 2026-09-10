@@ -24,16 +24,24 @@ export const HistoryCharts: React.FC = () => {
   const [timeRange, setTimeRange] = useState(TIME_RANGES[0]);
   const [historyData, setHistoryData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
+    const controller = new AbortController();
+    let inFlight = false;
     const fetchHistory = async () => {
+      if(inFlight) return;
+      inFlight = true;
       setLoading(true);
       try {
-        const end = Math.floor(Date.now() / 1000);
+        const end = Math.floor(Date.now() / 15000) * 15;
         const start = end - timeRange.seconds;
         
-        const res = await fetch(`/api/history?query={__name__="${activeMetric}"}&start=${start}&end=${end}&step=${timeRange.step}`);
+        const res = await fetch(`/api/history?query={__name__="${activeMetric}"}&start=${start}&end=${end}&step=${timeRange.step}`, {signal: controller.signal});
+        if(!res.ok) throw new Error(res.status === 503 ? "History storage is unavailable" : "History request failed");
         const json = await res.json();
+        if(json.status !== "success") throw new Error("History request failed");
+        setError('');
         
         if (json.status === "success" && json.data && json.data.result) {
           const result = json.data.result[0];
@@ -54,15 +62,16 @@ export const HistoryCharts: React.FC = () => {
           }
         }
       } catch (err) {
-        console.error("History fetch error:", err);
+        if(!controller.signal.aborted) {setError(err instanceof Error ? err.message : "History request failed");setHistoryData([]);}
       } finally {
-        setLoading(false);
+        inFlight = false;
+        if(!controller.signal.aborted) setLoading(false);
       }
     };
     
     fetchHistory();
     const interval = setInterval(fetchHistory, 15000);
-    return () => clearInterval(interval);
+    return () => {controller.abort();clearInterval(interval);};
   }, [activeMetric, timeRange]);
 
   const metricConfig = METRICS[activeMetric];
@@ -99,7 +108,7 @@ export const HistoryCharts: React.FC = () => {
       </div>
       
       <div style={{ flex: 1, width: '100%', minHeight: '300px' }}>
-        {loading && historyData.length === 0 ? (
+        {error ? (<div role="alert" style={{color: "#fca5a5", padding: "1rem"}}>{error}</div>) : loading && historyData.length === 0 ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#64748b' }}>
             Loading historical data...
           </div>

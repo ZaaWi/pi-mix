@@ -16,12 +16,25 @@ spec:
         app: dashboard
     spec:
       containers:
-        - name: dashboard
-          image: mhmdzawi/pi-mix-dashboard:413788d8d951fc17d8d30648e4deeccc74ca8864
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 80
-              name: http
+      - name: dashboard
+        image: mhmdzawi/pi-mix-dashboard:413788d8d951fc17d8d30648e4deeccc74ca8864
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        env: []
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+  strategy:
+    type: Recreate
 ---
 apiVersion: v1
 kind: Service
@@ -32,9 +45,9 @@ spec:
   selector:
     app: dashboard
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: http
+  - protocol: TCP
+    port: 80
+    targetPort: http
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -45,12 +58,12 @@ metadata:
     traefik.ingress.kubernetes.io/router.entrypoints: web
 spec:
   rules:
-    - http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: dashboard
-                port:
-                  number: 80
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: dashboard
+            port:
+              number: 80

@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: vaio-server
+      automountServiceAccountToken: false
+      containers:
+      - name: redis
+        image: redis:7
+        args:
+        - --save
+        - ''
+        - --appendonly
+        - 'no'
+        - --maxmemory
+        - 256mb
+        - --maxmemory-policy
+        - allkeys-lru
+        - --aclfile
+        - /etc/redis/users.acl
+        ports:
+        - name: redis
+          containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '1'
+            memory: 512Mi
+        env:
+        - name: REDISCLI_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: redis-admin
+              key: password
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: acl
+          mountPath: /etc/redis
+          readOnly: true
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - test "$(redis-cli --user admin ping)" = PONG
+          periodSeconds: 10
+          timeoutSeconds: 3
+          initialDelaySeconds: 10
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - test "$(redis-cli --user admin ping)" = PONG
+          periodSeconds: 10
+          timeoutSeconds: 3
+          initialDelaySeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-data
+      - name: acl
+        secret:
+          secretName: redis-acl
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: redis
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi

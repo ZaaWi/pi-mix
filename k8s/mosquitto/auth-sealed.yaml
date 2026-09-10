@@ -1,0 +1,14 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: mosquitto-auth
+  namespace: iot
+spec:
+  encryptedData:
+    passwords: AgAQfz8mE/8zs5Rk1HkmZ5XBX5oO2ISxkIoGt6thxoasoEffZvMD+SkW6UbpGDH5GPErBgMV5wxciCUFchaoKUicvLJLkE4Dw8c9KheUUfvMiFlh9jJKQUr9S4AGljEP6w72acZUfT7b++fZ8oEInhxNH4vu1SmKnxPE8UjBuc1PmCL9+0vQReeNPPeoYC+rmTpjQsOjLQ/MIs9ICKDlxhr+VNb4rAl0YnrPGVIhzMvXIxsOC7i1aDQGnMrl5VClWRf+31bdD8+fmo0hXw5cf6TA+DuwONYgx8N6pxZVVpssPEUIYniVJwX6s4zBqM74BPAYYz3LO39pUJj8HsRxL62dV3dGSR/qxOqSHv5VJqxRHNeofcNy7pRH3uNhD/q9TFBiLURf795jYClawlkemijv1NFSPg+Ug8VKUC45Plholrx7QU1BCNNXBZImWdm0SSIcf/r5k115ClMNQT8r1xnUIiKnIN2Hh5BvkFZnl6WArGYvpvkVfrgyE8rKN7eukJ/ApGLikoFD5sfEiuMRVdl5cwoSBsAR/M27qFMXVjqgdQnIKYQaiWOPqVXQBjpf4jiMdDUUzSNTzuXrawAteeNq4x02i5xPpDYhcEOr7Xu4FpqQOZW73ydFuZ0J1/OVS46pUwj5rfvVaXKXFomLwn7t2N8dIk+2AX+5yNenfZynj0UzrPRfP1VLYp7mbKuDVlwHAJqlZQoxFBQin9jed3Ehab0izwbAjR6BuVaNKDgeA+NpiewMHqq9AMujV7BbY4Q7ik/Q7Bpo3aQ78nCtBAXrllDfPnXJbqxe8qas6C0a73FwxIEjrN5MCnzn2Im1tKNlYUJNGYMBSq+YhXmwBlpVVDXBHoY6FaLGS5vukXIKjxFVVFXfrbdI0Dg7W7gw4mnJsaC6vaVXBKXiYIwzKFBs9Xt05o6i/SR8qFo+ynm9SugzxFW2ophKYTuBqa2nVEiF
+  template:
+    metadata:
+      name: mosquitto-auth
+      namespace: iot
+    type: Opaque

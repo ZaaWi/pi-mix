@@ -1,0 +1,14 @@
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: redis-acl
+  namespace: database
+spec:
+  encryptedData:
+    users.acl: AgBPnT0XaFRW3njYrpFPQn6UAd2BNeYzgU2/xIfVmD5z+QMWwsqwgPlMQxXy+q+ANv+XWVQZ1levCeB1l2rn1/ptxN0xovGSqp026Z7IyzbJbsKR/qX0Thl24unrAq+JpSQ0TQ65riRR3oy1sT6n3SV0NNNnOkuu6TBa6tcs94HURY0B7AIMXkjrGcnkGYnogfLTEePqvsM9Xit/mrN0iCcKGm6D2bzqMrPVzb5TD0jyr9oS5PTVFnwJ+andNyrLuybXVIXgBHbiEgI9bT6MA/lZ5QMXUAo7ZNHeLyFcdAic8GJBcmKaWOAhl1ZT1kLw7f+dV6o1CQBpr7bsSSpsyUHfXo6R0sEFKjH/qzKMFs1M1Rd1ugESKxfviOavWEPM5ohBUjtMg1VfW2fPi95eNzoNOVBxC15IWvaxABmehMQROIgOD3no0gX3+5x77TjFCbesfjpAyr3atNWofi76qb1osLbC0tPz4gS2j/oB0VhWYPWNXTI2erx5H0XIyMrrXzUiM/2cj/1sI905Yndm/XDUYZwRygtxbX+97V/AMF4w+Jz3SqdAGc29QpodaFKBAOMknN/Z07Va+H3k16/c6UfVVJ/NClclaGsiQlxBUYXnx+/MzpQV8BHZ7nxlVS98M/DG9GWWUm7bAOxhip5t6BYq7wbLtlhZueAffGGpLoSqyEVFUOHuA2oqFW14c7wuVuHWuQJ58VIOQYYkf10oz79B48TWYgSBfzGuFVYGN/f+Zgl7im1A+t7w5vz7IsI42kVhlKjeN3bsKGKVYyi00KLEOYn1w5sOZDwJ7kbr6echehFff1fgZcUJlZb936cXKCB3u9Ig6LRUlJxorDfO+3yDYkMCCN/NzwpW3T9Z51QLOIroOXoEAe8vsoGrYTzf/0eYj832CxLBlg0iAH46qtbj94FwiC6k7W19VWWU0TdouX1zLgfpblw4Sc8KkhMAYDTvDwSihC/Mr5U7thPjsPzAk9cEQ5BOQ5b5rzHJ2saR3L9lBT53Hf0=
+  template:
+    metadata:
+      name: redis-acl
+      namespace: database
+    type: Opaque

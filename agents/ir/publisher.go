@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -41,6 +43,7 @@ func NewPublisher(cfg Config) *Publisher {
 		SetConnectRetryInterval(5 * time.Second).
 		SetAutoReconnect(true)
 
+	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.OnConnect = func(c mqtt.Client) {
 		log.Printf("connected to MQTT broker: %s", cfg.MQTTBroker)
 	}
@@ -50,7 +53,7 @@ func NewPublisher(cfg Config) *Publisher {
 
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
-	if token.WaitTimeout(3 * time.Second) && token.Error() != nil {
+	if token.WaitTimeout(3*time.Second) && token.Error() != nil {
 		log.Printf("mqtt initial connect failed, retrying in background: %v", token.Error())
 	}
 
@@ -65,7 +68,14 @@ func NewPublisher(cfg Config) *Publisher {
 }
 
 func (p *Publisher) Publish(frame Frame) {
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		log.Printf("event identity: %v", err)
+		return
+	}
 	payload := map[string]any{
+		"event_id": hex.EncodeToString(identity[:]),
+		"ts":       time.Now().Unix(),
 		"event":    "reading",
 		"sensor":   "ir",
 		"code":     frame.Hex,
@@ -113,6 +123,14 @@ func (p *Publisher) callRPC(a Action) {
 		req["params"] = map[string]any{}
 	}
 
+	params, ok := req["params"].(map[string]any)
+	if !ok {
+		params = map[string]any{}
+	}
+	if token := os.Getenv("BRIDGE_CONTROL_TOKEN"); token != "" {
+		params["control_token"] = token
+	}
+	req["params"] = params
 	data, _ := json.Marshal(req)
 
 	conn, err := net.DialTimeout("tcp", host, 5*time.Second)

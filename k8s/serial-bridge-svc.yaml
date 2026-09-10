@@ -7,6 +7,6 @@ spec:
   selector:
     app: serial-bridge
   ports:
-    - protocol: TCP
-      port: 9600
-      targetPort: 9600
+  - protocol: TCP
+    port: 9600
+    targetPort: 9600

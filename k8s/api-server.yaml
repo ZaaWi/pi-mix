@@ -16,17 +16,63 @@ spec:
         app: api-server
     spec:
       containers:
-        - name: api-server
-          image: mhmdzawi/pi-mix-api-server:413788d8d951fc17d8d30648e4deeccc74ca8864
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: MQTT_BROKER
-              value: "tcp://mosquitto.iot.svc.cluster.local:1883"
-            - name: VM_URL
-              value: "http://victoriametrics.iot.svc.cluster.local:8428"
-          ports:
-            - containerPort: 8080
-              name: http
+      - name: api-server
+        image: mhmdzawi/pi-mix-api-server:413788d8d951fc17d8d30648e4deeccc74ca8864
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MQTT_BROKER
+          value: tcp://mosquitto.iot.svc.cluster.local:1883
+        - name: VM_URL
+          value: http://victoriametrics.iot.svc.cluster.local:8428
+        - name: MQTT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: username
+        - name: MQTT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-mqtt
+              key: password
+        - name: REDIS_ADDR
+          value: redis.database.svc.cluster.local:6379
+        - name: REDIS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-redis
+              key: username
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-redis
+              key: password
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          timeoutSeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          timeoutSeconds: 3
+          periodSeconds: 20
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: the-bear
+  strategy:
+    type: Recreate
 ---
 apiVersion: v1
 kind: Service
@@ -37,6 +83,6 @@ spec:
   selector:
     app: api-server
   ports:
-    - protocol: TCP
-      port: 8080
-      targetPort: http
+  - protocol: TCP
+    port: 8080
+    targetPort: http
