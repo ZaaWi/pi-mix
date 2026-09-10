@@ -86,7 +86,7 @@ jobs:
           python3 - <<'PY'
           import os, pathlib, re
           for p in list(pathlib.Path('k8s').rglob('*.yaml'))+[pathlib.Path('ops/firmware-flasher.yaml')]:
-              p.write_text(re.sub(r'(image: mhmdzawi/pi-mix-[a-z-]+:)[^\s]+',lambda m:m[1]+os.environ['IMAGE_SHA'],p.read_text()))
+              p.write_text(re.sub(r'(image: mhmdzawi/pi-mix-[a-z0-9-]+:)[^\s]+',lambda m:m[1]+os.environ['IMAGE_SHA'],p.read_text()))
           PY
           git config user.name 'pi-mix CI'
           git config user.email 'ci@pi-mix'
