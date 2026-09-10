@@ -1,37 +1,31 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: db-ingestor
+  name: ingestor
   namespace: database
   labels:
-    app: db-ingestor
+    app: ingestor
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: db-ingestor
+      app: ingestor
   template:
     metadata:
       labels:
-        app: db-ingestor
+        app: ingestor
     spec:
       nodeSelector:
         kubernetes.io/hostname: vaio-server
-      volumes:
-      - name: spill-data
-        persistentVolumeClaim:
-          claimName: db-ingestor-spill-vaio
       containers:
-      - name: db-ingestor
-        image: mhmdzawi/pi-mix-db-ingestor:ec23b79ea74f460274ea6eacbc3273b765e7c6b8
+      - name: ingestor
+        image: mhmdzawi/pi-mix-ingestor:ec23b79ea74f460274ea6eacbc3273b765e7c6b8
         imagePullPolicy: IfNotPresent
         env:
         - name: MQTT_BROKER
           value: tcp://mosquitto.iot.svc.cluster.local:1883
         - name: MQTT_TOPIC
           value: pi/dht11,pi/ldr,pi/scale
-        - name: SPILL_DIR
-          value: /var/lib/db-ingestor/spill
         - name: PG_HOST
           value: postgres.database.svc.cluster.local
         - name: PG_PORT
@@ -61,9 +55,18 @@ spec:
             secretKeyRef:
               name: pi-mix-mqtt
               key: password
-        volumeMounts:
-        - name: spill-data
-          mountPath: /var/lib/db-ingestor
+        - name: REDIS_ADDR
+          value: redis.database.svc.cluster.local:6379
+        - name: REDIS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-redis
+              key: username
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pi-mix-redis
+              key: password
         resources:
           requests:
             cpu: 100m

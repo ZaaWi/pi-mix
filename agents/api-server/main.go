@@ -198,54 +198,95 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
-	step := r.URL.Query().Get("step")
-
+	
 	startN, e1 := strconv.ParseInt(start, 10, 64)
 	endN, e2 := strconv.ParseInt(end, 10, 64)
-	stepD, e3 := time.ParseDuration(step)
-	if e1 != nil || e2 != nil || e3 != nil || startN < 0 || endN < 0 || stepD < time.Second || endN < startN || endN-startN > 366*86400 || float64(endN-startN)/stepD.Seconds() > 11000 || len(query) > 512 || len(query) == 0 {
-		http.Error(w, "invalid or excessive history range", 400)
+	
+	if e1 != nil || e2 != nil || startN < 0 || endN < 0 || endN < startN || len(query) == 0 {
+		http.Error(w, "invalid range", 400)
 		return
 	}
-	targetURL := strings.TrimRight(vmURL, "/") + "/api/v1/query_range?" + url.Values{"query": {query}, "start": {start}, "end": {end}, "step": {step}}.Encode()
-	key := fmt.Sprintf("pi-mix:history:%x", sha256.Sum256([]byte(targetURL)))
-	if historyCache != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 350*time.Millisecond)
-		cached, err := historyCache.Get(ctx, key).Bytes()
-		cancel()
-		if err == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-History-Cache", "hit")
-			w.Write(cached)
-			return
+	
+	// Parse metric name from {__name__="sensor_temp_c"}
+	metric := ""
+	if strings.Contains(query, "__name__=\"") {
+		parts := strings.Split(query, "__name__=\"")
+		if len(parts) > 1 {
+			metric = strings.Split(parts[1], "\"")[0]
+		}
+	}
+	if metric == "" {
+		http.Error(w, "invalid query", 400)
+		return
+	}
+	
+	if historyCache == nil {
+		http.Error(w, "History storage is unavailable", 503)
+		return
+	}
+
+	redisKey := fmt.Sprintf("pi-mix:raw:%s", metric)
+	
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	
+	// Fetch from Redis ZSET
+	results, err := historyCache.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
+		Min: strconv.FormatInt(startN, 10),
+		Max: strconv.FormatInt(endN, 10),
+	}).Result()
+	
+	if err != nil {
+		http.Error(w, "History fetch failed", 500)
+		return
+	}
+	
+	// Format to match Prometheus API response
+	values := make([][]interface{}, 0, len(results))
+	for _, member := range results {
+		parts := strings.SplitN(member, ":", 2)
+		if len(parts) == 2 {
+			ts, _ := strconv.ParseInt(parts[0], 10, 64)
+			values = append(values, []interface{}{ts, parts[1]})
+		}
+	}
+	
+	// Determine sensor from metric for the label
+	sensorLabel := "unknown"
+	if strings.HasPrefix(metric, "sensor_") {
+		m := strings.TrimPrefix(metric, "sensor_")
+		if m == "temp_c" || m == "humidity_pct" {
+			sensorLabel = "dht11"
+		} else if m == "analog" {
+			sensorLabel = "ldr"
+		} else if m == "weight_kg" {
+			sensorLabel = "scale"
+		} else if m == "bits" {
+			sensorLabel = "ir"
 		}
 	}
 
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, targetURL, nil)
-	resp, err := backend.Do(req)
-	if err != nil {
-		// Keep live data usable while the storage node is unavailable.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"error","error":"History storage is unavailable"}`))
-		return
+	response := map[string]interface{}{
+		"status": "success",
+		"data": map[string]interface{}{
+			"resultType": "matrix",
+			"result": []interface{}{
+				map[string]interface{}{
+					"metric": map[string]interface{}{
+						"__name__": metric,
+						"sensor":   sensorLabel,
+					},
+					"values": values,
+				},
+			},
+		},
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
-	if err != nil || len(body) > 8<<20 {
-		http.Error(w, "history response unavailable or too large", http.StatusBadGateway)
-		return
-	}
-	if historyCache != nil && resp.StatusCode == http.StatusOK && json.Valid(body) {
-		ctx, cancel := context.WithTimeout(r.Context(), 350*time.Millisecond)
-		historyCache.Set(ctx, key, body, 20*time.Second)
-		cancel()
-	}
-
+	
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	w.Header().Set("X-History-Source", "redis")
+	json.NewEncoder(w).Encode(response)
 }
+
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	stateMu.RLock()
