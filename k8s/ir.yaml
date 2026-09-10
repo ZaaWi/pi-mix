@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: ir
-        image: mhmdzawi/pi-mix-ir:7f644be2ddc421f762930095ef8244871c296efc
+        image: mhmdzawi/pi-mix-ir:ec23b79ea74f460274ea6eacbc3273b765e7c6b8
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true

@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: dashboard
-        image: mhmdzawi/pi-mix-dashboard:7f644be2ddc421f762930095ef8244871c296efc
+        image: mhmdzawi/pi-mix-dashboard:ec23b79ea74f460274ea6eacbc3273b765e7c6b8
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
