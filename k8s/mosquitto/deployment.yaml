@@ -45,7 +45,9 @@ spec:
           limits:
             cpu: 500m
             memory: 128Mi
-        env: []
+        env:
+        - name: MOSQUITTO_UNSAFE_ALLOW_SYMLINKS
+          value: "1"
       volumes:
       - name: config
         configMap:
