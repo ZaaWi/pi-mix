@@ -23,7 +23,7 @@ spec:
           claimName: db-ingestor-spill-vaio
       containers:
       - name: db-ingestor
-        image: mhmdzawi/pi-mix-db-ingestor:010322fc7f1091c94c5f6fa3ef21df2d7181da98
+        image: mhmdzawi/pi-mix-db-ingestor:7f644be2ddc421f762930095ef8244871c296efc
         imagePullPolicy: IfNotPresent
         env:
         - name: MQTT_BROKER
