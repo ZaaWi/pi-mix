@@ -81,6 +81,7 @@ for i = 1, n do
   if val < agg.mn then agg.mn = val end
   if val > agg.mx then agg.mx = val end
   if ts >= agg.lt then agg.l = val; agg.lt = ts end
+  if cur[1] then redis.call('ZREM', b15, cur[1]) end
   redis.call('ZADD', b15, bucket, cjson.encode(agg))
   redis.call('HINCRBY', dirty, tostring(hour), 1)
 end

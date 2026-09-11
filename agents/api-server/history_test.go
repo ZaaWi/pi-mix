@@ -169,18 +169,18 @@ func TestResolveHistoryIntegration(t *testing.T) {
 	rdb.ZAdd(ctx, seriesKey("15m", "temp_c"), redis.Z{Score: float64(now.Unix() - 3600), Member: string(mb)})
 	rdb.ZAdd(ctx, seriesKey("1h", "temp_c"), redis.Z{Score: float64(now.Unix() - 7200), Member: string(mb)})
 
-	// Narrow window resolves to raw.
+	// Narrow window (<= 6h) resolves to raw.
 	pts, src, err := resolveHistory(ctx, rdb, "temp_c", rawTs-1, rawTs+1)
 	if err != nil || src != "raw" || len(pts) != 1 || pts[0].val != 22.0 {
 		t.Fatalf("raw: pts=%v src=%q err=%v", pts, src, err)
 	}
-	// Mid window resolves to 15m (avg = 66/3 = 22).
-	pts, src, err = resolveHistory(ctx, rdb, "temp_c", now.Unix()-7200, now.Unix())
+	// Mid window (>6h, <=30d) resolves to 15m (avg = 66/3 = 22).
+	pts, src, err = resolveHistory(ctx, rdb, "temp_c", now.Unix()-12*3600, now.Unix())
 	if err != nil || src != "15m" || len(pts) != 1 || pts[0].val != 22.0 {
 		t.Fatalf("15m: pts=%v src=%q err=%v", pts, src, err)
 	}
-	// Wide window resolves to 1h.
-	pts, src, err = resolveHistory(ctx, rdb, "temp_c", now.Unix()-3*24*3600, now.Unix())
+	// Wide window (>30d) resolves to 1h; the 15m seed lies outside it.
+	pts, src, err = resolveHistory(ctx, rdb, "temp_c", now.Unix()-45*24*3600, now.Unix()-2*3600)
 	if err != nil || src != "1h" || len(pts) != 1 || pts[0].val != 22.0 {
 		t.Fatalf("1h: pts=%v src=%q err=%v", pts, src, err)
 	}

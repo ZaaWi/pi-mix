@@ -39,7 +39,7 @@ def main():
     # trims stale buckets, backfills on cold start, and reads back aggregates
     # for the hourly roll-up. The API only reads ZSETs. The ACL must name every
     # command the script uses because Redis checks them against the caller.
-    acl='user default off\nuser admin on #'+hashlib.sha256(admin['password'].encode()).hexdigest()+' ~* &* +@all\nuser pi-mix on #'+hashlib.sha256(cache['password'].encode()).hexdigest()+' ~pi-mix:* +eval +script +zadd +zremrangebyscore +zrangebyscore +zrange +sadd +expire +exists +set +get +hincrby +hgetall +hdel +ping +hello\n'
+    acl='user default off\nuser admin on #'+hashlib.sha256(admin['password'].encode()).hexdigest()+' ~* &* +@all\nuser pi-mix on #'+hashlib.sha256(cache['password'].encode()).hexdigest()+' ~pi-mix:* +eval +script +zadd +zrem +zremrangebyscore +zrangebyscore +zrange +sadd +expire +exists +set +get +hincrby +hgetall +hdel +ping +hello\n'
     ensure('database','redis-acl',{'users.acl':acl},'infrastructure/database/redis-acl-sealed.yaml')
     script='umask 077; f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; mosquitto_passwd -U "$f"; cat "$f"'
     passwordfile=remote(['kubectl','exec','-i','-n','iot','deployment/mosquitto','--','sh','-c',script],(mqtt['username']+':'+mqtt['password']+'\n').encode()).decode()
