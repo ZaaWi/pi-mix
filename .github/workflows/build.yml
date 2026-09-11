@@ -23,13 +23,13 @@ jobs:
       TEST_PG_DSN: postgresql://postgres:verification-only@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-      - run: psql "$TEST_PG_DSN" -v ON_ERROR_STOP=1 -f agents/db-ingestor/migrations/000_sensor_schema.sql -f agents/db-ingestor/migrations/001_reliable_ingestion.sql
+      - run: psql "$TEST_PG_DSN" -v ON_ERROR_STOP=1 -f agents/ingestor/migrations/000_sensor_schema.sql -f agents/ingestor/migrations/001_reliable_ingestion.sql
       - uses: actions/setup-go@v5
         with:
-          go-version-file: agents/db-ingestor/go.mod
+          go-version-file: agents/ingestor/go.mod
           cache: false
       - run: |
-          for module in agents/api-server agents/ingestor agents/db-ingestor agents/ir agents/serial-bridge; do
+          for module in agents/api-server agents/ingestor agents/ir agents/serial-bridge; do
             (cd "$module" && go test ./...)
           done
       - uses: actions/setup-node@v4
