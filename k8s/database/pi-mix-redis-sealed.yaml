@@ -1,0 +1,24 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  annotations:
+    argocd.argoproj.io/tracking-id: iot:bitnami.com/SealedSecret:iot/pi-mix-redis
+    force-sync: "true"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"bitnami.com/v1alpha1","kind":"SealedSecret","metadata":{"annotations":{"argocd.argoproj.io/tracking-id":"iot:bitnami.com/SealedSecret:iot/pi-mix-redis","force-sync":"true"},"creationTimestamp":"2026-09-10T16:12:44Z","generation":1,"name":"pi-mix-redis","namespace":"database","resourceVersion":"3095705","uid":"4fd17232-c2f5-4202-97d3-7e5c17708384"},"spec":{"encryptedData":{"password":"AgCBPh/u1IeylM1fi2VoZwGTOWlGTtQ7awWOvsPz141wDVuQzaC7PUjZPGh4fE2UmaysjtHRn+lq4V2/5bfZpMcl6iL99vfyF/hj+6glupkUx2+bEMaY5wDb7jel8jvRXrI1vpyGzhDU31Df7M9bIAmSE8JsjVeiBsJ+s/pWRbt5XB5B0eCRTg4FwVA6trn1PeF4AASeXViag7OPw1Gh2QehcpP/S+IFi6jlOJY01b/K/ymoh+E00sKZiQUNVk9mpVw7vmzIN4PHbgmmLNsEXM7b3Q7ZcFAIGZmir2wbjAawWO3LmWJd6Ayo4vAyMIC+C8PvcQrsALo+gisf4WMXA7+JzbOHxNu+XROMHDWm13hzog5933pYtSKQzUzaSyEsP5ztI6IHrIo60Wp/WUf0E0oIo2wQgt95Jt7huXXGiA5GXsb1M6OHZxkKttBUXDDZmqF2kXJHkSqW1IXjfbva/snBfm42npdjUwpEwgR5jio3jASbgufLkVk2HZSx4uFdctbneXwMl9bKmtJWXfmgOSWFGBPFl65wbwGFwbW+3f4iK04Qplt4chx64sAilGHmCytX2XYtvFtKKGbBQLgWh8O+LbmJS2KNzbxOYKuwpaeBcYGpyXM3RjY3XtCHhsyVY2DPyKtamcvNM0DxarLAmm4/EQ+atP2rylP28CR8aHWKbw6ibCNJN7P9LJM+NwjmWGzM02iVLSONNAM6XHSvAya8sTRpV8CBgwnRNINpcktJlkPszSrnVXfrModtXiGxxo//Gpr9GZJGZDMxWuyhMH8l","username":"AgBChDjqTasgjGIbaC3E4x2C33V3F9HC6y7ENVTlWazd+0M5IGjso/m5zbhgBYWrYMI7MwWUZIUfj/Mmr22nUAsdoDLx1ZASSXIk66eu5YEyp6X09t6+WG+kRjJR62xydiSZn0T/Z5oeT5cl6ZML0S5o8dc5rXZYGTEkRQpLvirDOWTc0qyViy3wu9fKcSeKWtXax/aNW0Qed6A8MVgOoP686u1U6aDpGGFTXGllP+ruY1b8FA2BSU8X+lItrXUTN2mB4q0+VywaEputIbiAlHy3YrWkqW6JpZagQDlsT/nU/Zde3qrOfTl2au13pYgv1nRAqvzh1TUvKRT5LJseOPgZLtm9onCdTiyf2PrOcLa5YsywUWEuSKMSPsNInDbaOiEwpKEPfArwFq/+nK1gyP+BfUM+U0tt+x54I0fRbE5ihs6wkjW1F+AEaxsmzupgt3qb1EfIrxOxMNt4PwIGBQk74v0MPXz9Vq/WnniXksdACesEwwwL+byOxiEIfEYhsBIzkBbvZCMcRAR8mi3AWPw3XbmNtQWbX/ao/m96+wRLM+c3GjIPG+XzCWikfDcCxT/EuQRTwBGxwX6GZ3Egemgx/AI0hf58CrfEHPUeUh5qdJtQzrF3E4Z0KniLgzS4lvMg+nQCWbhsFoDa8J95Rm1kaVgy/ilQKE++ELnZPKfpGT/rMcqPK8TiF8f5k5PuIBS1wBcRKaI="},"template":{"metadata":{"name":"pi-mix-redis","namespace":"database"},"type":"Opaque"}},"status":{"conditions":[{"lastTransitionTime":"2026-09-10T16:18:24Z","lastUpdateTime":"2026-09-10T16:18:24Z","status":"True","type":"Synced"}],"observedGeneration":1}}
+  name: pi-mix-redis
+  namespace: database
+spec:
+  encryptedData:
+    password: AgCBPh/u1IeylM1fi2VoZwGTOWlGTtQ7awWOvsPz141wDVuQzaC7PUjZPGh4fE2UmaysjtHRn+lq4V2/5bfZpMcl6iL99vfyF/hj+6glupkUx2+bEMaY5wDb7jel8jvRXrI1vpyGzhDU31Df7M9bIAmSE8JsjVeiBsJ+s/pWRbt5XB5B0eCRTg4FwVA6trn1PeF4AASeXViag7OPw1Gh2QehcpP/S+IFi6jlOJY01b/K/ymoh+E00sKZiQUNVk9mpVw7vmzIN4PHbgmmLNsEXM7b3Q7ZcFAIGZmir2wbjAawWO3LmWJd6Ayo4vAyMIC+C8PvcQrsALo+gisf4WMXA7+JzbOHxNu+XROMHDWm13hzog5933pYtSKQzUzaSyEsP5ztI6IHrIo60Wp/WUf0E0oIo2wQgt95Jt7huXXGiA5GXsb1M6OHZxkKttBUXDDZmqF2kXJHkSqW1IXjfbva/snBfm42npdjUwpEwgR5jio3jASbgufLkVk2HZSx4uFdctbneXwMl9bKmtJWXfmgOSWFGBPFl65wbwGFwbW+3f4iK04Qplt4chx64sAilGHmCytX2XYtvFtKKGbBQLgWh8O+LbmJS2KNzbxOYKuwpaeBcYGpyXM3RjY3XtCHhsyVY2DPyKtamcvNM0DxarLAmm4/EQ+atP2rylP28CR8aHWKbw6ibCNJN7P9LJM+NwjmWGzM02iVLSONNAM6XHSvAya8sTRpV8CBgwnRNINpcktJlkPszSrnVXfrModtXiGxxo//Gpr9GZJGZDMxWuyhMH8l
+    username: AgBChDjqTasgjGIbaC3E4x2C33V3F9HC6y7ENVTlWazd+0M5IGjso/m5zbhgBYWrYMI7MwWUZIUfj/Mmr22nUAsdoDLx1ZASSXIk66eu5YEyp6X09t6+WG+kRjJR62xydiSZn0T/Z5oeT5cl6ZML0S5o8dc5rXZYGTEkRQpLvirDOWTc0qyViy3wu9fKcSeKWtXax/aNW0Qed6A8MVgOoP686u1U6aDpGGFTXGllP+ruY1b8FA2BSU8X+lItrXUTN2mB4q0+VywaEputIbiAlHy3YrWkqW6JpZagQDlsT/nU/Zde3qrOfTl2au13pYgv1nRAqvzh1TUvKRT5LJseOPgZLtm9onCdTiyf2PrOcLa5YsywUWEuSKMSPsNInDbaOiEwpKEPfArwFq/+nK1gyP+BfUM+U0tt+x54I0fRbE5ihs6wkjW1F+AEaxsmzupgt3qb1EfIrxOxMNt4PwIGBQk74v0MPXz9Vq/WnniXksdACesEwwwL+byOxiEIfEYhsBIzkBbvZCMcRAR8mi3AWPw3XbmNtQWbX/ao/m96+wRLM+c3GjIPG+XzCWikfDcCxT/EuQRTwBGxwX6GZ3Egemgx/AI0hf58CrfEHPUeUh5qdJtQzrF3E4Z0KniLgzS4lvMg+nQCWbhsFoDa8J95Rm1kaVgy/ilQKE++ELnZPKfpGT/rMcqPK8TiF8f5k5PuIBS1wBcRKaI=
+  template:
+    metadata:
+      name: pi-mix-redis
+      namespace: database
+    type: Opaque
+  conditions:
+  - lastTransitionTime: "2026-09-11T15:40:02Z"
+    lastUpdateTime: "2026-09-11T15:40:02Z"
+    message: no key could decrypt secret (password, username)
+    type: Synced
