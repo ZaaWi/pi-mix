@@ -2,5 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 agents/serial-bridge/bridge
+agents/serial-bridge/serial-bridge
 agents/ingestor/ingestor
+agents/ingestor/db-ingestor
+agents/ir/ir-agent
 agents/api-server/api-server

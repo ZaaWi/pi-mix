@@ -29,7 +29,7 @@ spec:
         - --appendonly
         - 'no'
         - --maxmemory
-        - 256mb
+        - 512mb
         - --maxmemory-policy
         - allkeys-lru
         - --aclfile

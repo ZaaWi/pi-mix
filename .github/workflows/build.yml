@@ -19,8 +19,13 @@ jobs:
           POSTGRES_PASSWORD: verification-only
         ports: ['5432:5432']
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_PG_DSN: postgresql://postgres:verification-only@localhost:5432/postgres?sslmode=disable
+      TEST_REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v4
       - run: psql "$TEST_PG_DSN" -v ON_ERROR_STOP=1 -f agents/ingestor/migrations/000_sensor_schema.sql -f agents/ingestor/migrations/001_reliable_ingestion.sql

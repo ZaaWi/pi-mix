@@ -57,6 +57,12 @@ spec:
               key: password
         - name: REDIS_ADDR
           value: redis.database.svc.cluster.local:6379
+        - name: REDIS_RAW_HOURS
+          value: '6'
+        - name: REDIS_15M_DAYS
+          value: '30'
+        - name: REDIS_1H_DAYS
+          value: '90'
         - name: REDIS_USERNAME
           valueFrom:
             secretKeyRef:

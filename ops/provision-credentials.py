@@ -31,10 +31,15 @@ def main():
     mqtt=ensure('iot','pi-mix-mqtt',{'username':'pi-mix','password':secrets.token_hex(32)},'k8s/mqtt-credentials-sealed.yaml')
     ensure('database','pi-mix-mqtt',mqtt,'k8s/database/mqtt-credentials-sealed.yaml')
     ensure('iot','bridge-control',{'token':secrets.token_hex(32)},'k8s/bridge-control-sealed.yaml')
-    ensure('database','pi-mix-pg',{'POSTGRES_USER':'pi_mix_writer','POSTGRES_PASSWORD':secrets.token_hex(32),'POSTGRES_DB':'pi_mix'},'k8s/database/pi-mix-pg-sealed.yaml')
+    pg=ensure('database','pi-mix-pg',{'POSTGRES_USER':'pi_mix_writer','POSTGRES_PASSWORD':secrets.token_hex(32),'POSTGRES_DB':'pi_mix'},'k8s/database/pi-mix-pg-sealed.yaml')
     cache=ensure('iot','pi-mix-redis',{'username':'pi-mix','password':secrets.token_hex(32)},'k8s/redis-credentials-sealed.yaml')
     admin=ensure('database','redis-admin',{'username':'admin','password':secrets.token_hex(32)},'infrastructure/database/redis-admin-sealed.yaml')
-    acl='user default off\nuser admin on #'+hashlib.sha256(admin['password'].encode()).hexdigest()+' ~* &* +@all\nuser pi-mix on #'+hashlib.sha256(cache['password'].encode()).hexdigest()+' ~pi-mix:history:* +get +set +ping +hello\n'
+    # Redis is the primary, always-readable history store. The ingestor merges
+    # samples via an atomic Lua script (dedup + raw/15m zsets + dirty hash),
+    # trims stale buckets, backfills on cold start, and reads back aggregates
+    # for the hourly roll-up. The API only reads ZSETs. The ACL must name every
+    # command the script uses because Redis checks them against the caller.
+    acl='user default off\nuser admin on #'+hashlib.sha256(admin['password'].encode()).hexdigest()+' ~* &* +@all\nuser pi-mix on #'+hashlib.sha256(cache['password'].encode()).hexdigest()+' ~pi-mix:* +eval +script +zadd +zremrangebyscore +zrangebyscore +zrange +sadd +expire +exists +set +get +hincrby +hgetall +hdel +ping +hello\n'
     ensure('database','redis-acl',{'users.acl':acl},'infrastructure/database/redis-acl-sealed.yaml')
     script='umask 077; f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; mosquitto_passwd -U "$f"; cat "$f"'
     passwordfile=remote(['kubectl','exec','-i','-n','iot','deployment/mosquitto','--','sh','-c',script],(mqtt['username']+':'+mqtt['password']+'\n').encode()).decode()

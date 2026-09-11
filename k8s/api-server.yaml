@@ -22,8 +22,6 @@ spec:
         env:
         - name: MQTT_BROKER
           value: tcp://mosquitto.iot.svc.cluster.local:1883
-        - name: VM_URL
-          value: http://victoriametrics.iot.svc.cluster.local:8428
         - name: MQTT_USERNAME
           valueFrom:
             secretKeyRef:

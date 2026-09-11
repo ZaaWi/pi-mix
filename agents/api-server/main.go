@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -19,7 +20,6 @@ import (
 var (
 	mqttBroker   = env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")
 	mqttTopic    = env("MQTT_TOPIC", "pi/#")
-	vmURL        = env("VM_URL", "http://victoriametrics.iot.svc.cluster.local:8428")
 	port         = env("PORT", "8080")
 	backend      = &http.Client{Timeout: 8 * time.Second}
 	liveClient   mqtt.Client
@@ -190,22 +190,150 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Proxies historical data requests to VictoriaMetrics, safely handles offline HDD
+// History is served entirely from Redis, which is the primary history store
+// (RAM only, no disk writes). The ingestor maintains three resolutions:
+//
+//	raw   individual samples,    retained 6h
+//	15m   per-bucket aggregates, retained 30d
+//	1h    per-hour aggregates,   retained 90d
+//
+// The API picks the finest resolution that covers the request width and falls
+// back to a coarser one on a freshly-rebuilt Redis. PostgreSQL is never read:
+// it stores the same aggregates only for durable, cold-boot backfill.
 func handleHistory(w http.ResponseWriter, r *http.Request) {
+	startN, endN, metric, err := parseHistoryArgs(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	sensor, metricName, ok := metricToSensor(metric)
+	if !ok {
+		http.Error(w, "invalid query", 400)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	pts, source, err := resolveHistory(ctx, historyCache, metricName, startN, endN)
+	if err != nil {
+		http.Error(w, "History storage is unavailable", 503)
+		return
+	}
+	complete := len(pts) > 0 && pts[0].ts <= startN+historyCoverTol && pts[len(pts)-1].ts >= endN-historyTailTol
+	if len(pts) == 0 {
+		source = "redis"
+	}
+	writeHistory(w, metric, sensor, decimate(pts), source, complete)
+}
+
+const (
+	historyCoverTol   = 60          // seconds; pamper sub-minute range starts
+	historyTailTol    = 2 * 60 * 60 // seconds; newest closed bucket trails now
+	maxHistoryPoints  = 3000
+	rawRetentionSecs  = 6 * 3600
+	d15mRetentionSecs = 30 * 24 * 3600
+)
+
+type point struct {
+	ts  int64
+	val float64
+}
+
+// pickSeries selects the finest resolution that can cover the whole window.
+func pickSeries(widthSec int64) string {
+	switch {
+	case widthSec <= rawRetentionSecs:
+		return "raw"
+	case widthSec <= d15mRetentionSecs:
+		return "15m"
+	default:
+		return "1h"
+	}
+}
+
+func seriesKey(series, metricName string) string { return "pi-mix:" + series + ":sensor_" + metricName }
+
+// resolveHistory queries the chosen resolution first, falling back to coarser
+// ones when a fresh Redis has not yet backfilled that resolution.
+func resolveHistory(ctx context.Context, rdb *redis.Client, metricName string, startN, endN int64) (pts []point, source string, err error) {
+	if rdb == nil {
+		return nil, "", fmt.Errorf("redis unavailable")
+	}
+	chosen := pickSeries(endN - startN)
+	order := []string{chosen}
+	for _, s := range []string{"1h", "15m", "raw"} {
+		if s != chosen {
+			order = append(order, s)
+		}
+	}
+	fatal := false
+	for _, series := range order {
+		p, qerr := seriesPoints(ctx, rdb, series, metricName, startN, endN)
+		if qerr != nil {
+			log.Printf("history: redis %s: %v", series, qerr)
+			fatal = true
+			continue
+		}
+		if len(p) == 0 {
+			continue
+		}
+		return p, series, nil
+	}
+	if fatal {
+		return nil, "", fmt.Errorf("redis unavailable")
+	}
+	return nil, "", nil
+}
+
+func seriesPoints(ctx context.Context, rdb *redis.Client, series, metricName string, startN, endN int64) ([]point, error) {
+	rangeSpec := &redis.ZRangeBy{Min: strconv.FormatInt(startN, 10), Max: strconv.FormatInt(endN, 10)}
+	key := seriesKey(series, metricName)
+	if series == "raw" {
+		members, err := rdb.ZRangeByScore(ctx, key, rangeSpec).Result()
+		return parseRedisMembers(members), err
+	}
+	items, err := rdb.ZRangeByScoreWithScores(ctx, key, rangeSpec).Result()
+	return parseAggMembers(items), err
+}
+
+// agg mirrors the member JSON written by the ingestor into the 15m/1h ZSETs.
+type agg struct {
+	C  int64   `json:"c"`
+	S  float64 `json:"s"`
+	Mn float64 `json:"mn"`
+	Mx float64 `json:"mx"`
+	L  float64 `json:"l"`
+	Lt int64   `json:"lt"`
+}
+
+func parseAggMembers(items []redis.Z) []point {
+	pts := make([]point, 0, len(items))
+	for _, z := range items {
+		member, _ := z.Member.(string)
+		var a agg
+		if err := json.Unmarshal([]byte(member), &a); err != nil || a.C <= 0 {
+			continue
+		}
+		val := a.S / float64(a.C)
+		if math.IsNaN(val) || math.IsInf(val, 0) {
+			continue
+		}
+		pts = append(pts, point{ts: int64(z.Score), val: val})
+	}
+	return pts
+}
+
+func parseHistoryArgs(r *http.Request) (startN, endN int64, metric string, err error) {
 	query := r.URL.Query().Get("query")
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
-	
 	startN, e1 := strconv.ParseInt(start, 10, 64)
 	endN, e2 := strconv.ParseInt(end, 10, 64)
-	
 	if e1 != nil || e2 != nil || startN < 0 || endN < 0 || endN < startN || len(query) == 0 {
-		http.Error(w, "invalid range", 400)
-		return
+		return 0, 0, "", fmt.Errorf("invalid range")
 	}
-	
 	// Parse metric name from {__name__="sensor_temp_c"}
-	metric := ""
 	if strings.Contains(query, "__name__=\"") {
 		parts := strings.Split(query, "__name__=\"")
 		if len(parts) > 1 {
@@ -213,77 +341,81 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if metric == "" {
-		http.Error(w, "invalid query", 400)
-		return
+		return 0, 0, "", fmt.Errorf("invalid query")
 	}
-	
-	if historyCache == nil {
-		http.Error(w, "History storage is unavailable", 503)
-		return
-	}
+	return startN, endN, metric, nil
+}
 
-	redisKey := fmt.Sprintf("pi-mix:raw:%s", metric)
-	
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-	
-	// Fetch from Redis ZSET
-	results, err := historyCache.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
-		Min: strconv.FormatInt(startN, 10),
-		Max: strconv.FormatInt(endN, 10),
-	}).Result()
-	
-	if err != nil {
-		http.Error(w, "History fetch failed", 500)
-		return
+func metricToSensor(metric string) (sensor, name string, ok bool) {
+	if !strings.HasPrefix(metric, "sensor_") {
+		return "", "", false
 	}
-	
-	// Format to match Prometheus API response
-	values := make([][]interface{}, 0, len(results))
-	for _, member := range results {
-		parts := strings.SplitN(member, ":", 2)
-		if len(parts) == 2 {
-			ts, _ := strconv.ParseInt(parts[0], 10, 64)
-			values = append(values, []interface{}{ts, parts[1]})
-		}
+	m := strings.TrimPrefix(metric, "sensor_")
+	known := map[string]string{"temp_c": "dht11", "humidity_pct": "dht11", "analog": "ldr", "weight_kg": "scale", "bits": "ir"}
+	sensor, ok = known[m]
+	if !ok {
+		return "", "", false
 	}
-	
-	// Determine sensor from metric for the label
-	sensorLabel := "unknown"
-	if strings.HasPrefix(metric, "sensor_") {
-		m := strings.TrimPrefix(metric, "sensor_")
-		if m == "temp_c" || m == "humidity_pct" {
-			sensorLabel = "dht11"
-		} else if m == "analog" {
-			sensorLabel = "ldr"
-		} else if m == "weight_kg" {
-			sensorLabel = "scale"
-		} else if m == "bits" {
-			sensorLabel = "ir"
-		}
-	}
+	return sensor, m, true
+}
 
-	response := map[string]interface{}{
+func parseRedisMembers(members []string) []point {
+	points := make([]point, 0, len(members))
+	for _, m := range members {
+		parts := strings.SplitN(m, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ts, e1 := strconv.ParseInt(parts[0], 10, 64)
+		val, e2 := strconv.ParseFloat(parts[1], 64)
+		if e1 != nil || e2 != nil || math.IsNaN(val) || math.IsInf(val, 0) {
+			continue
+		}
+		points = append(points, point{ts: ts, val: val})
+	}
+	return points
+}
+
+func decimate(points []point) []point {
+	if len(points) <= maxHistoryPoints {
+		return points
+	}
+	step := (len(points) + maxHistoryPoints - 1) / maxHistoryPoints
+	out := make([]point, 0, maxHistoryPoints+1)
+	for i := 0; i < len(points); i += step {
+		out = append(out, points[i])
+	}
+	if out[len(out)-1].ts != points[len(points)-1].ts {
+		out = append(out, points[len(points)-1])
+	}
+	return out
+}
+
+func writeHistory(w http.ResponseWriter, metric, sensor string, points []point, source string, complete bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-History-Source", source)
+	w.Header().Set("X-History-Complete", strconv.FormatBool(complete))
+	json.NewEncoder(w).Encode(historyResponse(metric, sensor, points))
+}
+
+func historyResponse(metric, sensor string, points []point) map[string]any {
+	values := make([][]any, 0, len(points))
+	for _, p := range points {
+		values = append(values, []any{p.ts, p.val})
+	}
+	return map[string]any{
 		"status": "success",
-		"data": map[string]interface{}{
+		"data": map[string]any{
 			"resultType": "matrix",
-			"result": []interface{}{
-				map[string]interface{}{
-					"metric": map[string]interface{}{
-						"__name__": metric,
-						"sensor":   sensorLabel,
-					},
+			"result": []any{
+				map[string]any{
+					"metric": map[string]any{"__name__": metric, "sensor": sensor},
 					"values": values,
 				},
 			},
 		},
 	}
-	
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-History-Source", "redis")
-	json.NewEncoder(w).Encode(response)
 }
-
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	stateMu.RLock()
