@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: bridge
-        image: mhmdzawi/pi-mix-serial-bridge:8ef197545b79043ee876e40246cbcf71de2795e0
+        image: mhmdzawi/pi-mix-serial-bridge:909edd9eaf886ecceab90c1a9d1329d1d13a7d05
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
