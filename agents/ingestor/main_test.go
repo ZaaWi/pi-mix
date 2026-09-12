@@ -6,12 +6,78 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
+
+// fakeMsg implements mqtt.Message; Ack records the ack.
+type fakeMsg struct {
+	acked atomic.Bool
+}
+
+func (*fakeMsg) Duplicate() bool   { return false }
+func (*fakeMsg) Dup() bool         { return false }
+func (*fakeMsg) Qos() byte         { return 1 }
+func (*fakeMsg) Retained() bool    { return false }
+func (*fakeMsg) Topic() string     { return "pi/ldr" }
+func (*fakeMsg) MessageID() uint16 { return 1 }
+func (*fakeMsg) Payload() []byte   { return nil }
+func (f *fakeMsg) Ack()            { f.acked.Store(true) }
+
+func resetStall() {
+	stuckMu.Lock()
+	stuckMsg = nil
+	stuckSince = time.Time{}
+	stuckMu.Unlock()
+}
+
+func TestMergeStallWatchdogAcksAfterGrace(t *testing.T) {
+	resetStall()
+	m := &fakeMsg{}
+	markMergeStall(m)
+	if m.acked.Load() {
+		t.Fatal("acked before grace period elapsed")
+	}
+	releaseMergeStall()
+	if !m.acked.Load() {
+		t.Fatal("parked message was not acked after grace")
+	}
+	m2 := &fakeMsg{}
+	markMergeStall(m2)
+	releaseMergeStall()
+	if !m2.acked.Load() {
+		t.Fatal("second parked message was not acked")
+	}
+}
+
+func TestMergeStallOnlyOneParked(t *testing.T) {
+	resetStall()
+	m1, m2 := &fakeMsg{}, &fakeMsg{}
+	markMergeStall(m1)
+	markMergeStall(m2)
+	releaseMergeStall()
+	if !m1.acked.Load() {
+		t.Fatal("first parked message was not acked")
+	}
+	if m2.acked.Load() {
+		t.Fatal("second message was acked by the same watchdog")
+	}
+}
+
+func TestMergeStallClearedOnSuccess(t *testing.T) {
+	resetStall()
+	m := &fakeMsg{}
+	markMergeStall(m)
+	clearMergeStall()
+	releaseMergeStall()
+	if m.acked.Load() {
+		t.Fatal("cleared message was acked")
+	}
+}
 
 func TestParseEvent(t *testing.T) {
 	now := time.Now()

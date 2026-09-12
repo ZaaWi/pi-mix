@@ -243,8 +243,7 @@ func logRedisError(msg string, err error) {
 }
 
 // ingestSample merges one event into Redis: dedup, raw tail, 15m bucket, dirty
-// hour marker, all in a single atomic script call. On error the message is NOT
-// acked so the QoS1 broker redelivers it once Redis recovers.
+// hour marker, all in a single atomic script call.
 func ingestSample(ctx context.Context, rdb *redis.Client, e event, now time.Time) error {
 	keys := []string{seenKey(now)}
 	args := []any{e.ID, e.TS}
@@ -253,6 +252,57 @@ func ingestSample(ctx context.Context, rdb *redis.Client, e event, now time.Time
 		args = append(args, value)
 	}
 	return rdb.Eval(ctx, luaMerge, keys, args...).Err()
+}
+
+// mergeStallAckAfter bounds how long a single un-merged QoS1 message may hold
+// the subscription queue. Mosquitto (persistence false) only redelivers an
+// un-acked in-flight publish on RECONNECT, so a message that failed to merge
+// while Redis was down would otherwise wedge the whole session forever: no
+// further messages are ever delivered, on any topic. After the grace period we
+// ack it instead; losses stay bounded to the outage window and the queue
+// advances as soon as Redis is writable again.
+const mergeStallAckAfter = 60 * time.Second
+
+var (
+	stuckMu    sync.Mutex
+	stuckMsg   mqtt.Message
+	stuckSince time.Time
+)
+
+// markMergeStall parks the message that just failed to merge so a watchdog can
+// ack it later if Redis stays down. Only the first stalled message is parked;
+// the broker blocks all later deliveries until it is acked.
+func markMergeStall(m mqtt.Message) {
+	stuckMu.Lock()
+	defer stuckMu.Unlock()
+	if stuckMsg != nil {
+		return
+	}
+	stuckMsg = m
+	stuckSince = time.Now()
+	time.AfterFunc(mergeStallAckAfter, releaseMergeStall)
+}
+
+// releaseMergeStall acks the parked message (from the watchdog timer, any
+// goroutine) so the QoS1 queue can advance after a prolonged Redis outage.
+func releaseMergeStall() {
+	stuckMu.Lock()
+	m := stuckMsg
+	stuckMsg = nil
+	stuckSince = time.Time{}
+	stuckMu.Unlock()
+	if m != nil {
+		logRedisError("merge stall", fmt.Errorf("acking message blocking the subscription after %s", mergeStallAckAfter))
+		m.Ack()
+	}
+}
+
+// clearMergeStall drops any parked reference once a merge finally succeeds.
+func clearMergeStall() {
+	stuckMu.Lock()
+	stuckMsg = nil
+	stuckSince = time.Time{}
+	stuckMu.Unlock()
 }
 
 // trimAll drops samples older than the retention windows for every metric.
@@ -509,11 +559,16 @@ func main() {
 				mctx, mcancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer mcancel()
 				if err := ingestSample(mctx, rdb, e, time.Now()); err != nil {
-					// Do not ack: QoS1 redelivery will re-apply once Redis recovers.
+					// Don't ack yet so a redelivery re-applies this sample once
+					// Redis recovers, but park it so the watchdog acks it if
+					// Redis stays down (one stuck message would otherwise wedge
+					// the whole QoS1 session forever).
 					logRedisError("merge", err)
+					markMergeStall(m)
 					return
 				}
 				m.Ack()
+				clearMergeStall()
 			})
 			if !t.WaitTimeout(5*time.Second) || t.Error() != nil {
 				log.Print("MQTT subscription failed")
