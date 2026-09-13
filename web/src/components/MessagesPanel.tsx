@@ -4,7 +4,6 @@ import { Message } from '../types';
 
 const POLL_MS = 10000;
 const FRESH_MS = 4000;
-const MAX_VISIBLE = 6;
 
 function timeAgo(ts: number): string {
   const s = Math.floor(Date.now() / 1000) - ts;
@@ -79,7 +78,7 @@ export const MessagesPanel: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const visible = messages.slice(0, MAX_VISIBLE);
+  const all = messages;
 
   return (
     <div className="glass glass-panel messages-container">
@@ -117,7 +116,7 @@ export const MessagesPanel: React.FC = () => {
         <div className="msg-empty">No messages yet.</div>
       ) : (
         <ul className="msg-list">
-          {visible.map(m => (
+          {all.map(m => (
             <li key={`${m.timestamp}:${m.title}`}>
               <button
                 type="button"
