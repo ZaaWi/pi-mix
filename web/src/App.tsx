@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import './index.css';
 import { LiveMetricsGrid } from './components/LiveMetricsGrid';
 import { HistoryCharts } from './components/HistoryCharts';
+import { MessagesPanel } from './components/MessagesPanel';
 import { SensorData } from './types';
 
 function App() {
@@ -62,6 +63,7 @@ function App() {
 
       <LiveMetricsGrid state={state} pulses={pulses} />
       <HistoryCharts />
+      <MessagesPanel />
     </div>
   );
 }

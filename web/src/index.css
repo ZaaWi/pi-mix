@@ -191,3 +191,233 @@ h1, h2, h3, h4 {
   color: #fff;
 }
 
+/* Messages panel */
+.messages-container {
+  margin-top: 24px;
+  width: 100%;
+}
+
+.messages-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.msg-live-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.msg-live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+}
+
+.msg-live-chip.msg-live-off {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.25);
+}
+
+.msg-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 6px #34d399;
+  animation: blink 2s infinite;
+}
+
+.msg-new-count {
+  background: #fbbf24;
+  color: #1f2937;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 9999px;
+  padding: 2px 7px;
+  animation: pop-in 0.3s ease;
+}
+
+.msg-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.msg-item:hover {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.07);
+  transform: translateX(3px);
+}
+
+.msg-item-fresh {
+  animation: msg-pop 4s ease;
+}
+
+.msg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fbbf24;
+  flex: none;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
+}
+
+.msg-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.msg-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #f8fafc;
+}
+
+.msg-text {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-time {
+  flex: none;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.msg-empty {
+  padding: 28px 0;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.msg-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 20px;
+  animation: fade-in 0.2s ease;
+}
+
+.msg-modal {
+  max-width: 480px;
+  width: 100%;
+  padding: 24px;
+}
+
+.msg-modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.msg-modal-icon {
+  flex: none;
+  display: flex;
+  padding-top: 4px;
+}
+
+.msg-modal-head h3 {
+  flex: 1;
+  font-size: 1.25rem;
+  color: #f8fafc;
+  line-height: 1.3;
+}
+
+.msg-modal-close {
+  flex: none;
+  display: flex;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  color: #cbd5e1;
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.msg-modal-close:hover {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+.msg-modal-time {
+  color: #64748b;
+  font-size: 0.8rem;
+  margin: 8px 0 14px;
+}
+
+.msg-modal-message {
+  color: #e2e8f0;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.msg-modal-desc {
+  color: #cbd5e1;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+@keyframes msg-pop {
+  0% { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.5); }
+  100% { background: rgba(255, 255, 255, 0.03); }
+}
+
+@keyframes pop-in {
+  0% { transform: scale(0.6); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+

@@ -1,3 +1,10 @@
+export interface Message {
+  title: string;
+  message: string;
+  desc: string;
+  timestamp: number;
+}
+
 export interface SensorData {
   dht11?: {
     temp_c: number;
