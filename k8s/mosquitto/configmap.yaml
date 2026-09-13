@@ -33,4 +33,10 @@ data:
 
     topic readwrite pi/#
 
+    topic read cudy/#
+
+    user cudy
+
+    topic write cudy/#
+
     '

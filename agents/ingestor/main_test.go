@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -16,16 +17,18 @@ import (
 
 // fakeMsg implements mqtt.Message; Ack records the ack.
 type fakeMsg struct {
-	acked atomic.Bool
+	acked   atomic.Bool
+	topic   string
+	payload []byte
 }
 
 func (*fakeMsg) Duplicate() bool   { return false }
 func (*fakeMsg) Dup() bool         { return false }
 func (*fakeMsg) Qos() byte         { return 1 }
 func (*fakeMsg) Retained() bool    { return false }
-func (*fakeMsg) Topic() string     { return "pi/ldr" }
+func (f *fakeMsg) Topic() string   { return f.topic }
 func (*fakeMsg) MessageID() uint16 { return 1 }
-func (*fakeMsg) Payload() []byte   { return nil }
+func (f *fakeMsg) Payload() []byte { return f.payload }
 func (f *fakeMsg) Ack()            { f.acked.Store(true) }
 
 func resetStall() {
@@ -76,6 +79,76 @@ func TestMergeStallClearedOnSuccess(t *testing.T) {
 	releaseMergeStall()
 	if m.acked.Load() {
 		t.Fatal("cleared message was acked")
+	}
+}
+
+func TestParseCudyEvent(t *testing.T) {
+	now := time.Now()
+	topic := "cudy/telemetry/rsrp"
+	good := map[string]any{"ts": now.Unix(), "value": -74.0, "unit": "dBm"}
+	e, err := parseCudyEvent(mustJSON(t, good), topic, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Sensor != "cudy" || len(e.Values) != 1 || e.Values["cudy_rsrp"] != -74 {
+		t.Fatalf("unexpected event: %+v", e)
+	}
+	if want := fmt.Sprintf("cudy:rsrp:%d", now.Unix()); e.ID != want {
+		t.Fatalf("event id = %q, want %q (deterministic for dedup)", e.ID, want)
+	}
+
+	// Same (metric, ts) must yield the same id so redelivery dedups.
+	e2, err := parseCudyEvent(mustJSON(t, good), topic, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.ID != e2.ID {
+		t.Fatalf("redelivered sample produced different event id")
+	}
+
+	cases := []struct {
+		name  string
+		topic string
+		body  map[string]any
+	}{
+		{"unknown metric", "cudy/telemetry/nope", good},
+		{"wrong depth", "cudy/nope", good},
+		{"wrong root", "pi/telemetry/rsrp", good},
+		{"non-numeric value", topic, map[string]any{"ts": now.Unix(), "value": "cold", "unit": "dBm"}},
+		{"old timestamp", topic, map[string]any{"ts": now.Add(-8 * 24 * time.Hour).Unix(), "value": -74}},
+		{"future timestamp", topic, map[string]any{"ts": now.Add(10 * time.Minute).Unix(), "value": -74}},
+	}
+	for _, c := range cases {
+		if _, err := parseCudyEvent(mustJSON(t, c.body), c.topic, now); err == nil {
+			t.Errorf("%s: expected error", c.name)
+		}
+	}
+	if _, err := parseCudyEvent(make([]byte, 4097), topic, now); err == nil {
+		t.Fatal("expected payload size rejection")
+	}
+
+	// ts fallback: missing ts uses the ingest time.
+	if _, err := parseCudyEvent(mustJSON(t, map[string]any{"value": 31, "unit": "dBm"}), "cudy/telemetry/rssi", now); err != nil {
+		t.Fatalf("missing ts should fall back to now: %v", err)
+	}
+}
+
+func TestRouteHandlerUsesTopicParser(t *testing.T) {
+	resetStall()
+	// A malformed cudy payload must take the cudy parse path and be acked
+	// (parse error fast-path), never reaching Redis.
+	m := &fakeMsg{topic: "cudy/telemetry/rsrp", payload: mustJSON(t, map[string]any{"value": "nope"})}
+	routeHandler("cudy/telemetry/+", nil)(nil, m)
+	if !m.acked.Load() {
+		t.Fatal("malformed cudy payload should be acked, not merged")
+	}
+
+	// Same malformed-ish payload under pi/dht11 must use parseEvent, which
+	// also rejects it and acks without Redis.
+	m2 := &fakeMsg{topic: "pi/dht11", payload: mustJSON(t, map[string]any{"sensor": "dht11"})}
+	routeHandler("pi/dht11", nil)(nil, m2)
+	if !m2.acked.Load() {
+		t.Fatal("malformed pi payload should be acked, not merged")
 	}
 }
 

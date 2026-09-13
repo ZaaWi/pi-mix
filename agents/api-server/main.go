@@ -355,11 +355,15 @@ func metricToSensor(metric string) (sensor, name string, ok bool) {
 	}
 	m := strings.TrimPrefix(metric, "sensor_")
 	known := map[string]string{"temp_c": "dht11", "humidity_pct": "dht11", "analog": "ldr", "weight_kg": "scale", "bits": "ir"}
-	sensor, ok = known[m]
-	if !ok {
-		return "", "", false
+	if sensor, ok := known[m]; ok {
+		return sensor, m, true
 	}
-	return sensor, m, true
+	// cudy series are namespaced with the cudy_ prefix by the ingestor; the
+	// ingress allowlist in the ingestor gates what can ever land here.
+	if strings.HasPrefix(m, "cudy_") {
+		return "cudy", m, true
+	}
+	return "", "", false
 }
 
 func parseRedisMembers(members []string) []point {

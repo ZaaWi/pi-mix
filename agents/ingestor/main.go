@@ -1,6 +1,16 @@
 // Ingestor aggregates telemetry into Redis (the primary history store) and
 // archives closed hours to PostgreSQL (durable, cold-boot backfill source).
 //
+// Two data domains are ingested:
+//
+//  1. pi/*  — per-sensor flat JSON ({event, sensor, <metric>: value}) published
+//     by the dht11/ldr/scale/ir agents. One "event" carries several metrics
+//     (e.g. dht11 => temp_c + humidity_pct), deduplicated by event_id.
+//  2. cudy/* — scalar telemetry from the Cudy LT18 router collector, one
+//     message per metric on cudy/telemetry/<metric> ({ts, value, unit}).
+//     Event id is deterministic (cudy:<metric>:<ts>) so a QoS1 redelivery of
+//     the same sample can never be double-applied.
+//
 // Key layout (per metric, sorted sets / hashes / sets / marker):
 //
 //	pi-mix:raw:sensor_<metric>   raw samples, member "<ts>:<value>", score=ts
@@ -41,14 +51,60 @@ import (
 const bucketSecs = 900
 
 var (
-	metrics = []string{"temp_c", "humidity_pct", "analog", "weight_kg", "bits"}
+	piMetrics = []string{"temp_c", "humidity_pct", "analog", "weight_kg", "bits"}
 
-	metricSensor = map[string]string{
+	// cudyMetricNames mirrors the cudy-collector topic contract
+	// (cudy/telemetry/<name>) — one scalar series per topic segment.
+	cudyMetricNames = []string{
+		"rssi", "rsrp", "rsrq", "sinr",
+		"band", "ul_bandwidth", "dl_bandwidth", "connected",
+		"session_traffic_bytes", "current_bytes", "monthly_bytes", "total_bytes",
+		"wn001_rx_bytes", "wn001_tx_bytes", "wn001_rx_pkts", "wn001_tx_pkts",
+		"1_rx_bytes", "1_tx_bytes", "1_rx_pkts", "1_tx_pkts",
+		"lan_rx_bytes", "lan_tx_bytes", "lan_rx_pkts", "lan_tx_pkts",
+		"cellular_rx_bytes", "cellular_tx_bytes", "cellular_rx_pkts", "cellular_tx_pkts",
+		"clients_count",
+	}
+
+	// cudyMetrics are the stored series names: each topic metric is namespaced with
+	// the cudy_ prefix so the series never collide with the pi sensors.
+	cudyMetrics = func() []string {
+		out := make([]string, 0, len(cudyMetricNames))
+		for _, m := range cudyMetricNames {
+			out = append(out, "cudy_"+m)
+		}
+		return out
+	}()
+
+	// metrics drives retention trim and closed-hour roll-up for every series.
+	metrics = append(append([]string{}, piMetrics...), cudyMetrics...)
+
+	// metricSensor maps a metric back to its owning sensor for PG row labels and
+	// cold-boot backfill filtering.
+	metricSensor = metricSensorMap()
+
+	// cudyMetricSet is the parse-time allowlist for cudy/telemetry/<metric>.
+	cudyMetricSet = func() map[string]struct{} {
+		s := make(map[string]struct{}, len(cudyMetricNames))
+		for _, m := range cudyMetricNames {
+			s[m] = struct{}{}
+		}
+		return s
+	}()
+
+	plainKeys = []string{"raw", "15m", "1h"}
+)
+
+func metricSensorMap() map[string]string {
+	m := map[string]string{
 		"temp_c": "dht11", "humidity_pct": "dht11",
 		"analog": "ldr", "weight_kg": "scale", "bits": "ir",
 	}
-	plainKeys = []string{"raw", "15m", "1h"}
-)
+	for _, metric := range cudyMetrics {
+		m[metric] = "cudy"
+	}
+	return m
+}
 
 // luaMerge dedups by event id, keeps the per-sample raw tail and merges the
 // sample into its 15m Bucket and marks the owning hour dirty. Atomic so a
@@ -215,6 +271,49 @@ func parseEvent(raw []byte, now time.Time) (event, error) {
 	return e, nil
 }
 
+// parseCudyEvent maps one cudy/telemetry/<metric> message ({ts, value, unit})
+// onto the shared event shape. The metric name is taken from the topic (never
+// from the payload) so a malformed or mismatched payload cannot pollute the
+// series namespace; it is stored as cudy_<metric>. The event id is
+// deterministic per (metric, ts) so a QoS1 redelivery of the same sample is
+// deduplicated, exactly like pi events.
+func parseCudyEvent(raw []byte, topic string, now time.Time) (event, error) {
+	if len(raw) > 4096 {
+		return event{}, fmt.Errorf("payload too large")
+	}
+	parts := strings.Split(topic, "/")
+	if len(parts) != 3 || parts[0] != "cudy" || parts[1] != "telemetry" {
+		return event{}, fmt.Errorf("unexpected cudy topic %q", topic)
+	}
+	metric := parts[2]
+	if _, ok := cudyMetricSet[metric]; !ok {
+		return event{}, fmt.Errorf("unknown cudy metric %q", metric)
+	}
+	var p struct {
+		TS    float64 `json:"ts"`
+		Value float64 `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return event{}, err
+	}
+	if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+		return event{}, fmt.Errorf("invalid cudy value")
+	}
+	ts := int64(p.TS)
+	if p.TS == 0 {
+		ts = now.Unix()
+	}
+	if ts < now.Add(-7*24*time.Hour).Unix() || ts > now.Add(5*time.Minute).Unix() {
+		return event{}, fmt.Errorf("timestamp out of range")
+	}
+	return event{
+		ID:     fmt.Sprintf("cudy:%s:%d", metric, ts),
+		Sensor: "cudy",
+		TS:     ts,
+		Values: map[string]float64{"cudy_" + metric: p.Value},
+	}, nil
+}
+
 var redisErrMu sync.Mutex
 var redisErrTimes = map[string]time.Time{}
 
@@ -303,6 +402,42 @@ func clearMergeStall() {
 	stuckMsg = nil
 	stuckSince = time.Time{}
 	stuckMu.Unlock()
+}
+
+// routeHandler returns the MQTT message handler for a subscribed topic. cudy/*
+// topics map one scalar per message (metric from the topic); every other topic
+// is the legacy pi/sensor flat-event format.
+func routeHandler(topic string, rdb *redis.Client) func(mqtt.Client, mqtt.Message) {
+	if strings.HasPrefix(topic, "cudy/") {
+		return func(_ mqtt.Client, m mqtt.Message) {
+			e, err := parseCudyEvent(m.Payload(), m.Topic(), time.Now())
+			ingest(m, rdb, e, err)
+		}
+	}
+	return func(_ mqtt.Client, m mqtt.Message) {
+		e, err := parseEvent(m.Payload(), time.Now())
+		ingest(m, rdb, e, err)
+	}
+}
+
+// ingest applies one parsed event to Redis exactly once. On failure the message
+// is intentionally left un-acked so a redelivery re-applies it once Redis
+// recovers, but it is parked so the watchdog acks it if Redis stays down (one
+// stuck message would otherwise wedge the whole QoS1 session forever).
+func ingest(m mqtt.Message, rdb *redis.Client, e event, err error) {
+	if err != nil {
+		m.Ack()
+		return
+	}
+	mctx, mcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mcancel()
+	if err := ingestSample(mctx, rdb, e, time.Now()); err != nil {
+		logRedisError("merge", err)
+		markMergeStall(m)
+		return
+	}
+	m.Ack()
+	clearMergeStall()
 }
 
 // trimAll drops samples older than the retention windows for every metric.
@@ -549,27 +684,8 @@ func main() {
 	opts.SetCleanSession(false).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.OnConnect = func(c mqtt.Client) {
-		for _, topic := range strings.Split(env("MQTT_TOPIC", "pi/dht11,pi/ldr,pi/scale"), ",") {
-			t := c.Subscribe(strings.TrimSpace(topic), 1, func(_ mqtt.Client, m mqtt.Message) {
-				e, err := parseEvent(m.Payload(), time.Now())
-				if err != nil {
-					m.Ack()
-					return
-				}
-				mctx, mcancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer mcancel()
-				if err := ingestSample(mctx, rdb, e, time.Now()); err != nil {
-					// Don't ack yet so a redelivery re-applies this sample once
-					// Redis recovers, but park it so the watchdog acks it if
-					// Redis stays down (one stuck message would otherwise wedge
-					// the whole QoS1 session forever).
-					logRedisError("merge", err)
-					markMergeStall(m)
-					return
-				}
-				m.Ack()
-				clearMergeStall()
-			})
+		for _, topic := range strings.Split(env("MQTT_TOPIC", "pi/dht11,pi/ldr,pi/scale,cudy/telemetry/+"), ",") {
+			t := c.Subscribe(strings.TrimSpace(topic), 1, routeHandler(strings.TrimSpace(topic), rdb))
 			if !t.WaitTimeout(5*time.Second) || t.Error() != nil {
 				log.Print("MQTT subscription failed")
 			}

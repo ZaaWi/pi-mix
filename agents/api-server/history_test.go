@@ -36,13 +36,16 @@ func TestMetricToSensor(t *testing.T) {
 		sensor, name string
 		ok           bool
 	}{
-		"sensor_temp_c":       {"dht11", "temp_c", true},
-		"sensor_humidity_pct": {"dht11", "humidity_pct", true},
-		"sensor_analog":       {"ldr", "analog", true},
-		"sensor_weight_kg":    {"scale", "weight_kg", true},
-		"sensor_bits":         {"ir", "bits", true},
-		"temp_c":              {"", "", false},
-		"sensor_unknown":      {"", "", false},
+		"sensor_temp_c":             {"dht11", "temp_c", true},
+		"sensor_humidity_pct":       {"dht11", "humidity_pct", true},
+		"sensor_analog":             {"ldr", "analog", true},
+		"sensor_weight_kg":          {"scale", "weight_kg", true},
+		"sensor_bits":               {"ir", "bits", true},
+		"sensor_cudy_rsrp":          {"cudy", "cudy_rsrp", true},
+		"sensor_cudy_clients_count": {"cudy", "cudy_clients_count", true},
+		"temp_c":                    {"", "", false},
+		"sensor_unknown":            {"", "", false},
+		"cudy_rsrp":                 {"", "", false}, // missing the sensor_ prefix
 	}
 	for in, want := range cases {
 		sensor, name, ok := metricToSensor(in)

@@ -25,7 +25,7 @@ spec:
         - name: MQTT_BROKER
           value: tcp://mosquitto.iot.svc.cluster.local:1883
         - name: MQTT_TOPIC
-          value: pi/dht11,pi/ldr,pi/scale
+          value: pi/dht11,pi/ldr,pi/scale,cudy/telemetry/+
         - name: PG_HOST
           value: postgres.database.svc.cluster.local
         - name: PG_PORT

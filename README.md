@@ -29,7 +29,16 @@ GitHub Actions tests all Go services, Python publishers and the typed dashboard 
 
 Credentials are cluster-scoped SealedSecrets. To provision or reseal, run `ops/provision-credentials.py --cert <public-cert.pem> --kubeseal <binary>` locally. It reuses existing secrets and writes only encrypted manifests to Git. Configure the PostgreSQL role/schema before switching the writer. Do not apply the Vaio history manifests over an existing Pi installation until its data has been copied to the new PVCs.
 
-Shared database access is allowed from `database`, `iot`, and namespaces labeled `homelab/database-access=true`; authentication still applies. MQTT permits only authenticated `pi/#` traffic. UART mutation RPCs require `bridge-control`; read RPCs are restricted by a NetworkPolicy to sensor agents and the manual flasher.
+Shared database access is allowed from `database`, `iot`, and namespaces labeled `homelab/database-access=true`; authentication still applies. MQTT permits only authenticated traffic: `pi/#` (read/write) and `cudy/#` (read for the ingestor, write-only for the router collector). UART mutation RPCs require `bridge-control`; read RPCs are restricted by a NetworkPolicy to sensor agents and the manual flasher.
+
+## Cudy router telemetry
+
+The Cudy LT18 4G router is read-only scraped by the `cudy-collector` (separate repo), which publishes one scalar series per message on `cudy/telemetry/<metric>` with payload `{ts, value, unit}`. The ingestor subscribes `cudy/telemetry/+` and stores each series as `sensor_cudy_<metric>` in the same Redis/PG rolling layout (raw, 15m, 1h), deduplicated deterministically per `(metric, ts)`. History queries work via the normal API, e.g. `{__name__="sensor_cudy_rsrp"}`.
+
+- Series follow the collector's contract: `rssi, rsrp, rsrq, sinr, band, ul_bandwidth, dl_bandwidth, connected`, traffic counters per interface and `clients_count`.
+- The broker ACL grants `cudy` a write-only `cudy/#` (collector) and `pi-mix` read access to `cudy/#` (ingestor). The `cudy` MQTT user's password lives in the `mosquitto-auth` SealedSecret — reseal it after adding the user.
+- Counters (byte/packet totals) are stored and rolled up as-is; the `last`/`last_ts` aggregation fields carry the latest counter value. Rate conversion is a future dashboard-side concern.
+- Live SSE/dashboard panels for the router are not part of the ingestor; the API history path serves the series. Dashboard UI is a follow-up.
 
 ## Verification and backups
 
