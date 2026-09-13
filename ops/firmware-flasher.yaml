@@ -9,7 +9,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: flasher
-        image: mhmdzawi/pi-mix-firmware:254ab4cd949d0ef2eba619550e3f6e39fe49164e
+        image: mhmdzawi/pi-mix-firmware:4b41fe122c7eb3717f705bb8855edd66a6ecf4ec
         env:
         - name: BRIDGE_CONTROL_TOKEN
           valueFrom:
