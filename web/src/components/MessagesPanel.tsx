@@ -1,12 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Bell, X } from 'lucide-react';
 import { Message } from '../types';
 
 const POLL_MS = 10000;
 const FRESH_MS = 4000;
-const SLIDE_MS = 5000;
-const MAX_VISIBLE = 3;
-const FETCH_LIMIT = 15;
+const MAX_VISIBLE = 6;
 
 function timeAgo(ts: number): string {
   const s = Math.floor(Date.now() / 1000) - ts;
@@ -36,26 +34,17 @@ export const MessagesPanel: React.FC = () => {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Message | null>(null);
   const [fresh, setFresh] = useState<Set<number>>(new Set());
-  const [index, setIndex] = useState(0);
-  const [slideId, setSlideId] = useState(0);
-  const [dir, setDir] = useState<'up' | 'down'>('up');
-  const [hasMoved, setHasMoved] = useState(false);
-  const [paused, setPaused] = useState(false);
   const prevKeys = useRef<Set<string>>(new Set());
-
-  const slots = Math.max(1, messages.length - MAX_VISIBLE + 1);
-  const visible = messages.slice(index, index + MAX_VISIBLE);
 
   useEffect(() => {
     const controller = new AbortController();
     const load = async (initial: boolean) => {
       try {
-        const res = await fetch(`/api/messages?limit=${FETCH_LIMIT}`, { signal: controller.signal });
+        const res = await fetch('/api/messages?limit=15', { signal: controller.signal });
         if (!res.ok) throw new Error('messages unavailable');
         const json = await res.json();
         const list: Message[] = Array.isArray(json.messages) ? json.messages : [];
         setMessages(list);
-        setIndex(prev => Math.min(prev, Math.max(0, list.length - MAX_VISIBLE)));
         setError('');
 
         if (!initial) {
@@ -82,39 +71,6 @@ export const MessagesPanel: React.FC = () => {
     return () => { controller.abort(); clearInterval(interval); };
   }, []);
 
-  const advance = (delta: number) => {
-    if (messages.length <= MAX_VISIBLE) return;
-    setDir(delta > 0 ? 'up' : 'down');
-    setIndex(prev => {
-      const n = Math.max(1, messages.length - MAX_VISIBLE + 1);
-      return (prev + delta + n) % n;
-    });
-    setHasMoved(true);
-    setSlideId(id => id + 1);
-  };
-
-  const jumpTo = (n: number) => {
-    if (n === index) return;
-    setDir(n > index ? 'up' : 'down');
-    setIndex(n);
-    setHasMoved(true);
-    setSlideId(id => id + 1);
-  };
-
-  useEffect(() => {
-    if (paused || selected || messages.length <= MAX_VISIBLE) return;
-    const t = setInterval(() => {
-      setDir('up');
-      setIndex(prev => {
-        const n = Math.max(1, messages.length - MAX_VISIBLE + 1);
-        return (prev + 1) % n;
-      });
-      setHasMoved(true);
-      setSlideId(id => id + 1);
-    }, SLIDE_MS);
-    return () => clearInterval(t);
-  }, [paused, selected, messages.length]);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSelected(null);
@@ -122,6 +78,8 @@ export const MessagesPanel: React.FC = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const visible = messages.slice(0, MAX_VISIBLE);
 
   return (
     <div className="glass glass-panel messages-container">
@@ -158,64 +116,26 @@ export const MessagesPanel: React.FC = () => {
       ) : messages.length === 0 ? (
         <div className="msg-empty">No messages yet.</div>
       ) : (
-        <div
-          className="msg-carousel"
-          onMouseEnter={() => setPaused(true)}
-          onMouseLeave={() => setPaused(false)}
-        >
-          <ul key={slideId} className={`msg-list ${hasMoved ? `msg-slide-${dir}` : ''}`}>
-            {visible.map(m => (
-              <li key={`${m.timestamp}:${m.title}:${m.message}`}>
-                <button
-                  type="button"
-                  className={`msg-item ${fresh.has(m.timestamp) ? 'msg-item-fresh' : ''}`}
-                  onClick={() => setSelected(m)}
-                >
-                  <span className="msg-dot"></span>
-                  <span className="msg-body">
-                    <span className="msg-title">{m.title}</span>
-                    <span className="msg-text">{m.message}</span>
-                  </span>
-                  <time className="msg-time" dateTime={new Date(m.timestamp * 1000).toISOString()}>
-                    {timeAgo(m.timestamp)}
-                  </time>
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          {messages.length > MAX_VISIBLE && (
-            <div className="msg-controls">
+        <ul className="msg-list">
+          {visible.map(m => (
+            <li key={`${m.timestamp}:${m.title}`}>
               <button
                 type="button"
-                className="msg-nav"
-                onClick={() => advance(-1)}
-                aria-label="Show older messages"
+                className={`msg-item ${fresh.has(m.timestamp) ? 'msg-item-fresh' : ''}`}
+                onClick={() => setSelected(m)}
               >
-                <ChevronLeft size={16} />
+                <span className="msg-dot"></span>
+                <span className="msg-body">
+                  <span className="msg-title">{m.title}</span>
+                  <span className="msg-text">{m.message}</span>
+                </span>
+                <time className="msg-time" dateTime={new Date(m.timestamp * 1000).toISOString()}>
+                  {timeAgo(m.timestamp)}
+                </time>
               </button>
-              <div className="msg-dots">
-                {Array.from({ length: slots }, (_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    className={`msg-dot-btn ${i === index ? 'is-active' : ''}`}
-                    onClick={() => jumpTo(i)}
-                    aria-label={`Show messages ${i + 1} of ${slots}`}
-                  />
-                ))}
-              </div>
-              <button
-                type="button"
-                className="msg-nav"
-                onClick={() => advance(1)}
-                aria-label="Show newer messages"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          )}
-        </div>
+            </li>
+          ))}
+        </ul>
       )}
 
       {selected && (
