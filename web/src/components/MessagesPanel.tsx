@@ -121,6 +121,7 @@ export const MessagesPanel: React.FC = () => {
               <button
                 type="button"
                 className={`msg-item ${fresh.has(m.timestamp) ? 'msg-item-fresh' : ''}`}
+                style={m.color ? ({ '--msg-color': m.color } as React.CSSProperties) : undefined}
                 onClick={() => setSelected(m)}
               >
                 <span className="msg-dot"></span>
@@ -147,7 +148,7 @@ export const MessagesPanel: React.FC = () => {
             aria-label={selected.title}
           >
             <div className="msg-modal-head">
-              <span className="msg-modal-icon"><Bell size={20} color="#fbbf24" /></span>
+              <span className="msg-modal-icon"><Bell size={20} color={selected.color || '#fbbf24'} /></span>
               <h3>{selected.title}</h3>
               <button
                 type="button"

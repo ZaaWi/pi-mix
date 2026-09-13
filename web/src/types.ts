@@ -2,6 +2,7 @@ export interface Message {
   title: string;
   message: string;
   desc: string;
+  color?: string;
   timestamp: number;
 }
 

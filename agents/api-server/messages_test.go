@@ -128,7 +128,7 @@ func TestPostMessageHandler(t *testing.T) {
 	historyCache = rdb
 	defer func() { historyCache = prev }()
 
-	body := `{"title":"hello","message":"world","desc":"note"}`
+	body := `{"title":"hello","message":"world","desc":"note","color":"#22c55e"}`
 	r := httptest.NewRequest("POST", "/api/messages", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handlePostMessage(w, r)
@@ -144,5 +144,8 @@ func TestPostMessageHandler(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"title":"hello"`) {
 		t.Fatalf("unexpected GET body: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"color":"#22c55e"`) {
+		t.Fatalf("color not round-tripped: %s", w.Body.String())
 	}
 }

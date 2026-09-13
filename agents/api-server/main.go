@@ -449,6 +449,7 @@ type message struct {
 	Title     string `json:"title"`
 	Message   string `json:"message"`
 	Desc      string `json:"desc"`
+	Color     string `json:"color"`
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -541,6 +542,7 @@ func handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg.Title = strings.TrimSpace(msg.Title)
 	msg.Message = strings.TrimSpace(msg.Message)
+	msg.Color = strings.TrimSpace(msg.Color)
 	if msg.Title == "" || msg.Message == "" {
 		http.Error(w, "title and message are required", 400)
 		return
