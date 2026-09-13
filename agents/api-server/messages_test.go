@@ -60,13 +60,14 @@ func TestMessagesIntegration(t *testing.T) {
 	rdb.Del(ctx, messagesKey)
 	defer rdb.Del(ctx, messagesKey)
 
-	if err := addMessage(ctx, rdb, message{Title: "old", Message: "first", Timestamp: 1000}); err != nil {
+	now := time.Now().Unix()
+	if err := addMessage(ctx, rdb, message{Title: "old", Message: "first", Timestamp: now - 2*3600}); err != nil {
 		t.Fatalf("addMessage: %v", err)
 	}
-	if err := addMessage(ctx, rdb, message{Title: "new", Message: "last", Desc: "d", Timestamp: 3000}); err != nil {
+	if err := addMessage(ctx, rdb, message{Title: "new", Message: "last", Desc: "d", Timestamp: now}); err != nil {
 		t.Fatalf("addMessage: %v", err)
 	}
-	if err := addMessage(ctx, rdb, message{Title: "mid", Message: "second", Timestamp: 2000}); err != nil {
+	if err := addMessage(ctx, rdb, message{Title: "mid", Message: "second", Timestamp: now - 3600}); err != nil {
 		t.Fatalf("addMessage: %v", err)
 	}
 
@@ -93,17 +94,21 @@ func TestMessagesIntegration(t *testing.T) {
 		t.Fatalf("limit failed: %+v", limited)
 	}
 
-	// A message older than the retention window disappears on the next write.
-	if err := addMessage(ctx, rdb, message{Title: "fresh", Message: "f", Timestamp: time.Now().Unix()}); err != nil {
-		t.Fatalf("addMessage fresh: %v", err)
+	// A message whose timestamp falls outside the retention window is
+	// dropped by the trim that runs on the next write.
+	if err := addMessage(ctx, rdb, message{Title: "stale", Message: "s", Timestamp: now - messagesRetention - 1}); err != nil {
+		t.Fatalf("addMessage stale: %v", err)
 	}
 	msgs, err = getMessages(ctx, rdb, 50)
 	if err != nil {
 		t.Fatalf("getMessages after trim: %v", err)
 	}
+	if len(msgs) != 3 {
+		t.Fatalf("retention trim changed message count: got %d, want 3 (%+v)", len(msgs), msgs)
+	}
 	for _, m := range msgs {
-		if m.Title == "old" {
-			t.Fatalf("retention trim did not drop old message: %+v", msgs)
+		if m.Title == "stale" {
+			t.Fatalf("retention trim did not drop stale message: %+v", msgs)
 		}
 	}
 }
