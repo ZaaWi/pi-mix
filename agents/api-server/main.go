@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +70,7 @@ func main() {
 	http.HandleFunc("/api/stream", handleStream)
 	http.HandleFunc("/api/history", handleHistory)
 	http.HandleFunc("/api/status", handleStatus)
+	http.HandleFunc("/api/messages", handleMessages)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !liveClient.IsConnected() {
@@ -430,10 +433,134 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"mqtt_connected": liveClient != nil && liveClient.IsConnected(), "sensors": ages})
 }
 
+// Notifications/messages are stored in a ZSET (score = timestamp) so they
+// work within the pi-mix Redis ACL, which only permits zadd/zrangebyscore/
+// zremrangebyscore/expire on `pi-mix:*` keys. Members are JSON documents.
+const (
+	messagesKey       = "pi-mix:messages"
+	messagesRetention = int64(30 * 24 * 3600) // seconds; older entries are trimmed
+)
+
+type message struct {
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	Desc      string `json:"desc"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+func handleMessages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		handleGetMessages(w, r)
+	case http.MethodPost:
+		handlePostMessage(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// getMessages returns stored messages, newest first, capped at limit.
+func getMessages(ctx context.Context, rdb *redis.Client, limit int) ([]message, error) {
+	if rdb == nil {
+		return nil, fmt.Errorf("redis unavailable")
+	}
+	members, err := rdb.ZRangeByScore(ctx, messagesKey, &redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]message, 0, len(members))
+	for _, m := range members {
+		var msg message
+		if json.Unmarshal([]byte(m), &msg) != nil || msg.Timestamp <= 0 {
+			continue
+		}
+		msgs = append(msgs, msg)
+	}
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Timestamp > msgs[j].Timestamp })
+	if limit > 0 && len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	return msgs, nil
+}
+
+// addMessage stores a message and trims entries older than the retention window.
+func addMessage(ctx context.Context, rdb *redis.Client, msg message) error {
+	if rdb == nil {
+		return fmt.Errorf("redis unavailable")
+	}
+	if msg.Timestamp <= 0 {
+		return fmt.Errorf("invalid timestamp")
+	}
+	member, _ := json.Marshal(msg)
+	trimBefore := strconv.FormatInt(time.Now().Unix()-messagesRetention, 10)
+	_, err := rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZAdd(ctx, messagesKey, redis.Z{Score: float64(msg.Timestamp), Member: string(member)})
+		p.ZRemRangeByScore(ctx, messagesKey, "-inf", trimBefore)
+		return nil
+	})
+	return err
+}
+
+func handleGetMessages(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	msgs, err := getMessages(ctx, historyCache, limit)
+	if err != nil {
+		http.Error(w, "History storage is unavailable", 503)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"messages": msgs})
+}
+
+func handlePostMessage(w http.ResponseWriter, r *http.Request) {
+	var msg message
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	if err != nil {
+		http.Error(w, "invalid body", 400)
+		return
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		http.Error(w, "invalid json", 400)
+		return
+	}
+	msg.Title = strings.TrimSpace(msg.Title)
+	msg.Message = strings.TrimSpace(msg.Message)
+	if msg.Title == "" || msg.Message == "" {
+		http.Error(w, "title and message are required", 400)
+		return
+	}
+	if msg.Timestamp == 0 {
+		msg.Timestamp = time.Now().Unix()
+	}
+	if msg.Timestamp < 0 {
+		http.Error(w, "invalid timestamp", 400)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := addMessage(ctx, historyCache, msg); err != nil {
+		http.Error(w, "History storage is unavailable", 503)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{"message": msg})
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
