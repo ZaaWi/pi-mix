@@ -493,11 +493,13 @@ func addMessage(ctx context.Context, rdb *redis.Client, msg message) error {
 	}
 	member, _ := json.Marshal(msg)
 	trimBefore := strconv.FormatInt(time.Now().Unix()-messagesRetention, 10)
-	_, err := rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.ZAdd(ctx, messagesKey, redis.Z{Score: float64(msg.Timestamp), Member: string(member)})
-		p.ZRemRangeByScore(ctx, messagesKey, "-inf", trimBefore)
-		return nil
-	})
+	// Plain pipeline: the pi-mix Redis ACL does not grant MULTI/EXEC, so a
+	// TxPipelined transaction aborts here. ZADD + ZREMRANGEBYSCORE use only
+	// commands the ACL permits.
+	pipe := rdb.Pipeline()
+	pipe.ZAdd(ctx, messagesKey, redis.Z{Score: float64(msg.Timestamp), Member: string(member)})
+	pipe.ZRemRangeByScore(ctx, messagesKey, "-inf", trimBefore)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
