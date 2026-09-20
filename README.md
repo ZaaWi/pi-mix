@@ -44,7 +44,22 @@ The Cudy LT18 4G router is read-only scraped by the `cudy-collector` (separate r
 
 Run `go test ./...` in each Go agent directory, `python3 -m unittest discover -s tests`, and `npm ci && npm run build` in `web`. Database replay/late-arrival integration tests additionally require `TEST_PG_DSN` pointing to a disposable database with both SQL migrations applied. Never use a production database for test setup.
 
-The PostgreSQL CronJob writes compressed cluster dumps at 03:15 UTC to the Vaio, retaining 14 days. Role passwords are excluded: retain encrypted credentials and the SealedSecrets recovery key separately. Same-disk backups protect against logical errors, not HDD failure; copy verified backups to another machine for disk-loss protection.
+The PostgreSQL CronJob writes a validated compressed cluster dump at 03:15 UTC
+to a retained static volume on `the-bear`, while PostgreSQL itself runs on the
+Vaio. It retains 14 days. Role passwords are excluded: retain encrypted
+credentials and the SealedSecrets recovery key separately. The backup PV uses
+`Retain`; deleting the claim does not delete its files. Periodically copy a
+verified dump off-site as protection against loss of the whole lab.
+
+The database PVC is dynamically provisioned, so protect its generated PV after
+initial provisioning (and verify it during audits):
+
+```bash
+data_pv=$(kubectl -n database get pvc postgres-data -o jsonpath='{.spec.volumeName}')
+kubectl patch pv "$data_pv" --type=merge \
+  -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+kubectl get pv "$data_pv" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}{"\n"}'
+```
 
 For a post-deployment audit, check node and pod readiness, fresh `/api/state` timestamps and `/api/status`, successful history queries, writer `/status` pending batches, PostgreSQL aggregates, Redis cache hits and rejected anonymous access. Confirm PVC node affinity selects the Vaio and inspect failed backup jobs.
 
