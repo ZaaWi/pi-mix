@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: scale
-        image: mhmdzawi/pi-mix-scale:1876cf41450ad75ab760827473bd5bb4dcec0136
+        image: mhmdzawi/pi-mix-scale:f53a16f6d75c2fbe32f892e6853490fb6d009e0c
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
