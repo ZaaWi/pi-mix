@@ -11,16 +11,24 @@ def remote(args, data=None):
     return subprocess.check_output(['ssh','the-bear','sudo -n '+shlex.join(args)],input=data)
 
 
+def read_secret(namespace,name):
+    raw=remote(['kubectl','get','secret',name,'-n',namespace,'--ignore-not-found','-o','json'])
+    if not raw.strip():
+        return {}
+    obj=json.loads(raw)
+    return {k:base64.b64decode(v).decode() for k,v in obj.get('data',{}).items()}
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--cert',required=True)
     parser.add_argument('--kubeseal',required=True)
     args=parser.parse_args()
-    def ensure(namespace,name,values,path):
-        raw=remote(['kubectl','get','secret',name,'-n',namespace,'--ignore-not-found','-o','json'])
-        if raw.strip():
-            obj=json.loads(raw)
-            values={k:base64.b64decode(v).decode() for k,v in obj['data'].items()}
+    def ensure(namespace,name,values,path,reuse=True):
+        if reuse:
+            existing=read_secret(namespace,name)
+            if existing:
+                values=existing
         obj={'apiVersion':'v1','kind':'Secret','metadata':{'name':name,'namespace':namespace},'type':'Opaque','stringData':values}
         raw=json.dumps(obj).encode()
         sealed=subprocess.check_output([args.kubeseal,'--cert',args.cert,'--format','yaml'],input=raw)
@@ -41,8 +49,23 @@ def main():
     # command the script uses because Redis checks them against the caller.
     acl='user default off\nuser admin on #'+hashlib.sha256(admin['password'].encode()).hexdigest()+' ~* &* +@all\nuser pi-mix on #'+hashlib.sha256(cache['password'].encode()).hexdigest()+' ~pi-mix:* +eval +script +zadd +zrem +zremrangebyscore +zrangebyscore +zrange +sadd +expire +exists +set +get +hincrby +hgetall +hdel +ping +hello\n'
     ensure('database','redis-acl',{'users.acl':acl},'infrastructure/database/redis-acl-sealed.yaml')
+    # The broker password file must contain every client. pi-mix and cudy are
+    # managed here; any other users already present are retained as-is so a
+    # rerun cannot silently drop an account again.
+    broker={mqtt['username']:mqtt['password']}
+    cudy=read_secret('cudy','cudy-collector')
+    cudy_user=cudy.get('MQTT_USERNAME')
+    if cudy_user and cudy.get('MQTT_PASSWORD'):
+        broker[cudy_user]=cudy['MQTT_PASSWORD']
+    retained={}
+    for line in read_secret('iot','mosquitto-auth').get('passwords','').splitlines():
+        user,sep,hashed=line.partition(':')
+        if sep and user and hashed and user not in broker:
+            retained[user]=hashed
     script='umask 077; f=$(mktemp); trap \'rm -f "$f"\' EXIT; cat > "$f"; mosquitto_passwd -U "$f"; cat "$f"'
-    passwordfile=remote(['kubectl','exec','-i','-n','iot','deployment/mosquitto','--','sh','-c',script],(mqtt['username']+':'+mqtt['password']+'\n').encode()).decode()
-    ensure('iot','mosquitto-auth',{'passwords':passwordfile},'k8s/mosquitto/auth-sealed.yaml')
+    plain=''.join(user+':'+password+'\n' for user,password in broker.items())
+    hashed=remote(['kubectl','exec','-i','-n','iot','deployment/mosquitto','--','sh','-c',script],plain.encode()).decode()
+    passwordfile=''.join(line+'\n' for line in hashed.splitlines()+[u+':'+h for u,h in retained.items()])
+    ensure('iot','mosquitto-auth',{'passwords':passwordfile},'k8s/mosquitto/auth-sealed.yaml',reuse=False)
 
 if __name__=='__main__':main()
