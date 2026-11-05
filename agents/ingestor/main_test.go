@@ -320,6 +320,195 @@ func TestLuaMergeIntegration(t *testing.T) {
 	}
 }
 
+func TestLuaMergeCollapsesDuplicateBucketMembers(t *testing.T) {
+	rdb := testRedis(t)
+	ctx := context.Background()
+	now := time.Now()
+	bucket := now.Unix() / bucketSecs * bucketSecs
+	ts := bucket + 120
+	keys := []string{seriesKey("raw", "temp_c"), seriesKey("15m", "temp_c"), dirtyKey("temp_c"), seenKey(now)}
+	for _, k := range keys {
+		rdb.Del(ctx, k)
+	}
+	defer func() {
+		for _, k := range keys {
+			rdb.Del(context.Background(), k)
+		}
+	}()
+
+	m1, _ := json.Marshal(agg{C: 1, S: 10, Mn: 10, Mx: 10, L: 10, Lt: bucket})
+	m2, _ := json.Marshal(agg{C: 5, S: 50, Mn: 10, Mx: 10, L: 10, Lt: bucket + 60})
+	if err := rdb.ZAdd(ctx, seriesKey("15m", "temp_c"),
+		redis.Z{Score: float64(bucket), Member: string(m1)},
+		redis.Z{Score: float64(bucket), Member: string(m2)}).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	e := event{ID: "dup-merge", Sensor: "dht11", TS: ts, Values: map[string]float64{"temp_c": 10}}
+	if err := ingestSample(ctx, rdb, e, now); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := rdb.ZRangeByScoreWithScores(ctx, seriesKey("15m", "temp_c"), &redis.ZRangeBy{Min: "0", Max: "+inf"}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one bucket after merge, got %d", len(items))
+	}
+	var got agg
+	member, _ := items[0].Member.(string)
+	if err := json.Unmarshal([]byte(member), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := agg{C: 6, S: 60, Mn: 10, Mx: 10, L: 10, Lt: ts}
+	if got != want {
+		t.Fatalf("merged agg = %+v, want %+v", got, want)
+	}
+}
+
+func TestLuaBackfillCollapsesDuplicateMembers(t *testing.T) {
+	rdb := testRedis(t)
+	ctx := context.Background()
+	key := "pi-mix:15m:sensor_test_backfill"
+	score := int64(1795000000)
+	rdb.Del(ctx, key)
+	defer rdb.Del(context.Background(), key)
+
+	live1, _ := json.Marshal(agg{C: 2, S: 20, Mn: 10, Mx: 10, L: 10, Lt: score + 10})
+	live2, _ := json.Marshal(agg{C: 9, S: 90, Mn: 10, Mx: 10, L: 10, Lt: score + 20})
+	incoming, _ := json.Marshal(agg{C: 5, S: 50, Mn: 10, Mx: 10, L: 10, Lt: score + 30})
+	if err := rdb.ZAdd(ctx, key,
+		redis.Z{Score: float64(score), Member: string(live1)},
+		redis.Z{Score: float64(score), Member: string(live2)}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.Eval(ctx, luaBackfill, []string{key}, score, string(incoming)).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := rdb.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one backfilled member, got %d", len(items))
+	}
+	var got agg
+	member, _ := items[0].Member.(string)
+	if err := json.Unmarshal([]byte(member), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.C != 9 {
+		t.Fatalf("expected the more complete live aggregate (c=9), got %+v", got)
+	}
+
+	better, _ := json.Marshal(agg{C: 12, S: 120, Mn: 10, Mx: 10, L: 10, Lt: score + 40})
+	if err := rdb.Eval(ctx, luaBackfill, []string{key}, score, string(better)).Err(); err != nil {
+		t.Fatal(err)
+	}
+	items, err = rdb.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one member after replacement, got %d", len(items))
+	}
+	member, _ = items[0].Member.(string)
+	if err := json.Unmarshal([]byte(member), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.C != 12 {
+		t.Fatalf("expected the more complete backfill aggregate (c=12), got %+v", got)
+	}
+}
+
+func TestRollupCollapsesDuplicateMembersAndUpdates1h(t *testing.T) {
+	rdb := testRedis(t)
+	db := testPG(t)
+	ctx := context.Background()
+	now := time.Now()
+	hour := now.Add(-5 * time.Hour).Truncate(time.Hour)
+	base := hour.Unix() + 15*60
+	hourStr := strconv.FormatInt(hour.Unix(), 10)
+	endStr := strconv.FormatInt(hour.Unix()+3599, 10)
+
+	rdb.ZRemRangeByScore(ctx, seriesKey("15m", "temp_c"), hourStr, endStr)
+	rdb.ZRemRangeByScore(ctx, seriesKey("1h", "temp_c"), hourStr, hourStr)
+	rdb.HDel(ctx, dirtyKey("temp_c"), hourStr)
+	db.ExecContext(ctx, `DELETE FROM pi_sensor_data WHERE sensor='dht11' AND metric='temp_c' AND ts>=to_timestamp($1) AND ts<=to_timestamp($2)`, hour.Unix(), hour.Unix()+3599)
+	defer func() {
+		rdb.ZRemRangeByScore(context.Background(), seriesKey("15m", "temp_c"), hourStr, endStr)
+		rdb.ZRemRangeByScore(context.Background(), seriesKey("1h", "temp_c"), hourStr, hourStr)
+		rdb.HDel(context.Background(), dirtyKey("temp_c"), hourStr)
+		db.ExecContext(context.Background(), `DELETE FROM pi_sensor_data WHERE sensor='dht11' AND metric='temp_c' AND ts>=to_timestamp($1) AND ts<=to_timestamp($2)`, hour.Unix(), hour.Unix()+3599)
+	}()
+
+	m1, _ := json.Marshal(agg{C: 1, S: 10, Mn: 10, Mx: 10, L: 10, Lt: base})
+	m2, _ := json.Marshal(agg{C: 5, S: 50, Mn: 10, Mx: 10, L: 10, Lt: base + 60})
+	if err := rdb.ZAdd(ctx, seriesKey("15m", "temp_c"),
+		redis.Z{Score: float64(base), Member: string(m1)},
+		redis.Z{Score: float64(base), Member: string(m2)}).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rollupHour(ctx, rdb, db, "temp_c", hour.Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	var count15, count1h int64
+	if err := db.QueryRowContext(ctx, `SELECT count FROM pi_sensor_data WHERE sensor='dht11' AND metric='temp_c' AND interval='15m' AND ts=to_timestamp($1)`, base).Scan(&count15); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count FROM pi_sensor_data WHERE sensor='dht11' AND metric='temp_c' AND interval='1h' AND ts=to_timestamp($1)`, hour.Unix()).Scan(&count1h); err != nil {
+		t.Fatal(err)
+	}
+	if count15 != 5 || count1h != 5 {
+		t.Fatalf("rolled up counts = 15m:%d 1h:%d, want 5/5", count15, count1h)
+	}
+
+	items, err := rdb.ZRangeByScoreWithScores(ctx, seriesKey("1h", "temp_c"), &redis.ZRangeBy{Min: hourStr, Max: hourStr}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one 1h Redis member, got %d", len(items))
+	}
+	var a agg
+	member, _ := items[0].Member.(string)
+	if err := json.Unmarshal([]byte(member), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.C != 5 {
+		t.Fatalf("1h Redis aggregate = %+v, want c=5", a)
+	}
+}
+
+func TestFlushRowsDeduplicatesConflictKeys(t *testing.T) {
+	db := testPG(t)
+	ctx := context.Background()
+	ts := time.Now().Add(-90 * time.Minute).Truncate(15 * time.Minute).Unix()
+	sensor, metric, interval := "test_dedupe", "m", "15m"
+	_, _ = db.ExecContext(ctx, `DELETE FROM pi_sensor_data WHERE sensor=$1 AND metric=$2 AND interval=$3 AND ts=to_timestamp($4)`, sensor, metric, interval, ts)
+	defer db.ExecContext(context.Background(), `DELETE FROM pi_sensor_data WHERE sensor=$1 AND metric=$2 AND interval=$3 AND ts=to_timestamp($4)`, sensor, metric, interval, ts)
+
+	rows := []pgRow{
+		{sensor: sensor, metric: metric, interval: interval, ts: ts, count: 2, avg: 2, min: 2, max: 2, last: 2, sum: 4, lastTS: ts + 10},
+		{sensor: sensor, metric: metric, interval: interval, ts: ts, count: 5, avg: 5, min: 5, max: 5, last: 5, sum: 25, lastTS: ts + 20},
+	}
+	if err := flushRows(ctx, db, rows); err != nil {
+		t.Fatal(err)
+	}
+
+	var n, count, lastTS int64
+	if err := db.QueryRowContext(ctx, `SELECT count(*), max(count), max(extract(epoch from last_ts)::bigint) FROM pi_sensor_data WHERE sensor=$1 AND metric=$2 AND interval=$3 AND ts=to_timestamp($4)`, sensor, metric, interval, ts).Scan(&n, &count, &lastTS); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || count != 5 || lastTS != ts+20 {
+		t.Fatalf("deduped row: n=%d count=%d last_ts=%d, want 1/5/%d", n, count, lastTS, ts+20)
+	}
+}
+
 func TestBackfillIntegration(t *testing.T) {
 	rdb := testRedis(t)
 	db := testPG(t)

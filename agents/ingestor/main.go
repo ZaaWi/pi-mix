@@ -34,6 +34,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,18 +131,68 @@ for i = 1, n do
   local dirty = KEYS[1 + 3 * (i - 1) + 3]
   redis.call('ZADD', raw, ts, tostring(ts) .. ':' .. tostring(val))
   local cur = redis.call('ZRANGEBYSCORE', b15, tostring(bucket), tostring(bucket))
-  local agg
-  if cur[1] then agg = cjson.decode(cur[1]) else agg = {c=0,s=0,mn=val,mx=val,l=val,lt=ts} end
+  local agg = nil
+  local bestc = -1
+  for _, m in ipairs(cur) do
+    local ok, a = pcall(cjson.decode, m)
+    if ok and type(a) == 'table' then
+      local c = tonumber(a.c) or 0
+      if agg == nil or c > bestc then agg = a; bestc = c end
+    end
+  end
+  if agg == nil then agg = {c=0,s=0,mn=val,mx=val,l=val,lt=ts} end
   agg.c = agg.c + 1
   agg.s = agg.s + val
   if val < agg.mn then agg.mn = val end
   if val > agg.mx then agg.mx = val end
   if ts >= agg.lt then agg.l = val; agg.lt = ts end
-  if cur[1] then redis.call('ZREM', b15, cur[1]) end
+  for _, m in ipairs(cur) do redis.call('ZREM', b15, m) end
   redis.call('ZADD', b15, bucket, cjson.encode(agg))
   redis.call('HINCRBY', dirty, tostring(hour), 1)
 end
 return 1
+`
+
+// luaBackfill restores PostgreSQL aggregates into a Redis ZSET without ever
+// creating a second member at the same score. If a live/partial member already
+// exists, the aggregate with the most samples (then the newest last_ts) wins.
+// This makes a backfill that races a reconnecting MQTT session safe.
+//
+//	KEYS[1]  destination ZSET
+//	ARGV     score, member, score, member, ...
+var luaBackfill = `
+local key = KEYS[1]
+local changed = 0
+for i = 1, #ARGV, 2 do
+  local score = ARGV[i]
+  local incoming = ARGV[i + 1]
+  local cur = redis.call('ZRANGEBYSCORE', key, score, score)
+  local best = incoming
+  local bestc, bestlt = -1, -1
+  local ok, obj = pcall(cjson.decode, incoming)
+  if ok and type(obj) == 'table' then
+    bestc = tonumber(obj.c) or -1
+    bestlt = tonumber(obj.lt) or -1
+  end
+  for _, m in ipairs(cur) do
+    local ok2, o2 = pcall(cjson.decode, m)
+    if ok2 and type(o2) == 'table' then
+      local c = tonumber(o2.c) or -1
+      local lt = tonumber(o2.lt) or -1
+      if c > bestc or (c == bestc and lt > bestlt) then
+        best, bestc, bestlt = m, c, lt
+      end
+    end
+  end
+  if #cur == 1 and cur[1] == best then
+    -- Already the best single member; no write needed.
+  else
+    for _, m in ipairs(cur) do redis.call('ZREM', key, m) end
+    redis.call('ZADD', key, score, best)
+    changed = changed + 1
+  end
+end
+return changed
 `
 
 // agg is the member stored in the 15m/1h ZSETs; avg is derived as sum/count.
@@ -499,11 +550,10 @@ ORDER BY metric, ts ASC`, interval, int(days))
 	defer rows.Close()
 
 	type zsetEntry struct {
-		key    string
 		score  int64
 		member string
 	}
-	bulk := make([]zsetEntry, 0, 4096)
+	bulk := make(map[string][]zsetEntry)
 	for rows.Next() {
 		var metric string
 		var ts, count, lastTS int64
@@ -515,24 +565,25 @@ ORDER BY metric, ts ASC`, interval, int(days))
 			continue
 		}
 		mb, _ := json.Marshal(agg{C: count, S: sum, Mn: min, Mx: max, L: last, Lt: lastTS})
-		bulk = append(bulk, zsetEntry{seriesKey(interval, metric), ts, string(mb)})
+		key := seriesKey(interval, metric)
+		bulk[key] = append(bulk[key], zsetEntry{ts, string(mb)})
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for i := 0; i < len(bulk); i += 2000 {
-		chunk := bulk[i:]
-		if len(chunk) > 2000 {
-			chunk = chunk[:2000]
-		}
-		_, err := rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
-			for _, e := range chunk {
-				p.ZAdd(ctx, e.key, redis.Z{Score: float64(e.score), Member: e.member})
+	for key, entries := range bulk {
+		for i := 0; i < len(entries); i += 500 {
+			chunk := entries[i:]
+			if len(chunk) > 500 {
+				chunk = chunk[:500]
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+			args := make([]any, 0, len(chunk)*2)
+			for _, e := range chunk {
+				args = append(args, e.score, e.member)
+			}
+			if err := rdb.Eval(ctx, luaBackfill, []string{key}, args...).Err(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -580,17 +631,38 @@ func rollupHour(ctx context.Context, rdb *redis.Client, db *sql.DB, metric strin
 		return nil
 	}
 
-	sensor := metricSensor[metric]
-	total := agg{Mn: math.Inf(1), Mx: math.Inf(-1)}
-	rows := make([]pgRow, 0, len(items)+1)
+	// A bucket may still have legacy duplicate members from an old backfill
+	// race. Collapse them before building the multi-row upsert: PostgreSQL
+	// rejects a single INSERT ... ON CONFLICT statement that hits the same
+	// conflict target twice.
+	byScore := make(map[int64]agg, len(items))
 	for _, z := range items {
 		member, _ := z.Member.(string)
 		var a agg
 		if err := json.Unmarshal([]byte(member), &a); err != nil || a.C == 0 {
 			continue
 		}
+		ts := int64(z.Score)
+		if prev, ok := byScore[ts]; !ok || betterAgg(a, prev) {
+			byScore[ts] = a
+		}
+	}
+	if len(byScore) == 0 {
+		return nil
+	}
+	scores := make([]int64, 0, len(byScore))
+	for ts := range byScore {
+		scores = append(scores, ts)
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i] < scores[j] })
+
+	sensor := metricSensor[metric]
+	total := agg{Mn: math.Inf(1), Mx: math.Inf(-1)}
+	rows := make([]pgRow, 0, len(scores)+1)
+	for _, ts := range scores {
+		a := byScore[ts]
 		rows = append(rows, pgRow{sensor: sensor, metric: metric, interval: "15m",
-			ts: int64(z.Score), count: a.C, avg: a.avg(), min: a.Mn, max: a.Mx, last: a.L, sum: a.S, lastTS: a.Lt})
+			ts: ts, count: a.C, avg: a.avg(), min: a.Mn, max: a.Mx, last: a.L, sum: a.S, lastTS: a.Lt})
 		addAgg(&total, a)
 	}
 	if total.C == 0 {
@@ -598,12 +670,66 @@ func rollupHour(ctx context.Context, rdb *redis.Client, db *sql.DB, metric strin
 	}
 	rows = append(rows, pgRow{sensor: sensor, metric: metric, interval: "1h",
 		ts: hour, count: total.C, avg: total.avg(), min: total.Mn, max: total.Mx, last: total.L, sum: total.S, lastTS: total.Lt})
-	return flushRows(ctx, db, rows)
+	if err := flushRows(ctx, db, rows); err != nil {
+		return err
+	}
+
+	// The API reads the 1h Redis series for windows wider than the 15m
+	// retention. Keep it in sync with the authoritative row just written.
+	hmember, err := json.Marshal(total)
+	if err != nil {
+		return err
+	}
+	hkey := seriesKey("1h", metric)
+	hourStr := strconv.FormatInt(hour, 10)
+	_, err = rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZRemRangeByScore(ctx, hkey, hourStr, hourStr)
+		p.ZAdd(ctx, hkey, redis.Z{Score: float64(hour), Member: string(hmember)})
+		return nil
+	})
+	return err
+}
+
+// betterAgg reports whether a is a more complete bucket aggregate than b.
+func betterAgg(a, b agg) bool {
+	if a.C != b.C {
+		return a.C > b.C
+	}
+	return a.Lt > b.Lt
+}
+
+// betterRow reports whether a is a more complete PostgreSQL row than b.
+func betterRow(a, b pgRow) bool {
+	if a.count != b.count {
+		return a.count > b.count
+	}
+	return a.lastTS > b.lastTS
 }
 
 // flushRows is a single multi-row upsert. Rows are authoritative snapshots
 // (overwrite), not additive, because Redis is the source of truth.
 func flushRows(ctx context.Context, db *sql.DB, rows []pgRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	type rowKey struct {
+		sensor, metric, interval string
+		ts                       int64
+	}
+	seen := make(map[rowKey]int, len(rows))
+	unique := make([]pgRow, 0, len(rows))
+	for _, r := range rows {
+		k := rowKey{r.sensor, r.metric, r.interval, r.ts}
+		if i, ok := seen[k]; ok {
+			if betterRow(r, unique[i]) {
+				unique[i] = r
+			}
+			continue
+		}
+		seen[k] = len(unique)
+		unique = append(unique, r)
+	}
+	rows = unique
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO pi_sensor_data(sensor,metric,interval,ts,count,avg,min,max,last,sum,last_ts) VALUES ")
 	args := make([]any, 0, len(rows)*10)
@@ -679,6 +805,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	// Rebuild Redis from PostgreSQL before consuming MQTT. Doing this first
+	// removes the startup race where a QoS1 backlog replay and the backfill
+	// write the same 15m bucket at the same time. The maintenance loop keeps a
+	// safe retry (luaBackfill) for a Redis flush that happens while running.
+	backfillCtx, cancelBackfill := context.WithTimeout(ctx, 4*time.Minute)
+	if err := ensureBackfill(backfillCtx, rdb, db, cfg); err != nil {
+		log.Printf("backfill: %v (continuing; maintenance will retry)", err)
+	}
+	cancelBackfill()
 
 	opts := mqtt.NewClientOptions().AddBroker(env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")).SetClientID(env("MQTT_CLIENT_ID", "pi-mix-ingestor"))
 	opts.SetCleanSession(false).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
