@@ -819,14 +819,25 @@ func main() {
 	cancelBackfill()
 
 	opts := mqtt.NewClientOptions().AddBroker(env("MQTT_BROKER", "tcp://mosquitto.iot.svc.cluster.local:1883")).SetClientID(env("MQTT_CLIENT_ID", "pi-mix-ingestor"))
-	opts.SetCleanSession(false).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
+	// A clean session avoids replaying a broker-queued QoS1 message before
+	// OnConnect has registered the subscription. Such a replay is never acked
+	// and wedges the whole session (no further messages are delivered). The
+	// broker has persistence disabled, so a resumed session only holds an
+	// in-memory backlog; losing that backlog across a short outage is far
+	// better than a permanently stalled ingestor.
+	opts.SetCleanSession(true).SetAutoAckDisabled(true).SetConnectRetry(true).SetConnectTimeout(5 * time.Second).SetConnectRetryInterval(3 * time.Second)
 	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.OnConnect = func(c mqtt.Client) {
+		ok := true
 		for _, topic := range strings.Split(env("MQTT_TOPIC", "pi/dht11,pi/ldr,pi/scale,cudy/telemetry/+"), ",") {
 			t := c.Subscribe(strings.TrimSpace(topic), 1, routeHandler(strings.TrimSpace(topic), rdb))
 			if !t.WaitTimeout(5*time.Second) || t.Error() != nil {
 				log.Print("MQTT subscription failed")
+				ok = false
 			}
+		}
+		if ok {
+			log.Print("MQTT connected and subscribed")
 		}
 	}
 	client := mqtt.NewClient(opts)
