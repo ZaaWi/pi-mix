@@ -682,11 +682,13 @@ func rollupHour(ctx context.Context, rdb *redis.Client, db *sql.DB, metric strin
 	}
 	hkey := seriesKey("1h", metric)
 	hourStr := strconv.FormatInt(hour, 10)
-	_, err = rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.ZRemRangeByScore(ctx, hkey, hourStr, hourStr)
-		p.ZAdd(ctx, hkey, redis.Z{Score: float64(hour), Member: string(hmember)})
-		return nil
-	})
+	// Plain pipeline: the pi-mix Redis ACL does not grant MULTI/EXEC, so a
+	// TxPipelined transaction aborts here. Removing the old score first keeps
+	// the ZSET free of duplicate members.
+	pipe := rdb.Pipeline()
+	pipe.ZRemRangeByScore(ctx, hkey, hourStr, hourStr)
+	pipe.ZAdd(ctx, hkey, redis.Z{Score: float64(hour), Member: string(hmember)})
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
