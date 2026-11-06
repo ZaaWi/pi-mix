@@ -17,6 +17,12 @@ Live collection remains usable while the Vaio is offline. Pi publishers and MQTT
 
 The dashboard distinguishes stale sensor values from an open SSE connection and reports history-storage failures. IR and scale are event-driven, so lack of a recent event does not itself mean hardware failure.
 
+### Incident history
+
+**2026-11-05 22:23 → 2026-11-06 09:44 UTC — telemetry gap.** The ingestor stalled with MQTT connected but no messages delivered. Because the broker has `persistence false` and the Pi agents keep only bounded in-memory queues, everything published during the gap is unrecoverable. The 22:00 hour has partial 15m buckets and a partial 1h aggregate; the 23:00–08:00 hours are absent from both Redis and PostgreSQL. The 09:00 hour rolls up only the 09:30 and 09:45 buckets (ingestion resumed at 09:44), so its 1h count is lower than a normal hour.
+
+Root cause: the ingestor used a persistent MQTT session (`SetCleanSession(false)`). After a rollout, the broker could replay an unacked QoS1 message before `OnConnect` had registered the subscriptions. That replay was never acked, so the broker stopped delivering on every topic while `/readyz` still reported healthy. The fix is `SetCleanSession(true)`: a resumed session's in-memory backlog is no longer replayed, trading a short-outage loss for a session that cannot wedge. The ack watchdog still bounds a single message that fails to merge while Redis is down. Verified by restarting only the ingestor and observing ingestion resume without restarting Mosquitto.
+
 ## Repository and deployment
 
 - `agents/`, `web/`, `firmware/`: application source.
