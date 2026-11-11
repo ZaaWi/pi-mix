@@ -61,6 +61,59 @@ var cudyStateAreas = map[string]bool{
 // cudySensitiveFields are never exposed over /api/state or SSE.
 var cudySensitiveFields = []string{"imsi", "imei", "iccid"}
 
+// Cudy event timeline and per-client history. Events are non-retained MQTT
+// messages, so the API persists them in Redis (the ACL already permits the
+// ZSET commands used by the messages store) and keeps a small in-memory ring
+// of client snapshots for the dashboard's top-talkers chart.
+const (
+	cudyEventsKey       = "pi-mix:cudy:events"
+	cudyEventsRetention = int64(90 * 24 * 3600)
+	cudyClientWindow    = int64(24 * 3600)
+	cudyClientMax       = 1440 // 24h at one sample per minute
+)
+
+var cudyClientRing = newClientHistory(cudyClientMax)
+
+type clientSample struct {
+	TS      int64                    `json:"ts"`
+	Clients []map[string]interface{} `json:"clients"`
+}
+
+type clientHistory struct {
+	mu      sync.Mutex
+	max     int
+	samples []clientSample
+}
+
+func newClientHistory(max int) *clientHistory {
+	return &clientHistory{max: max}
+}
+
+func (h *clientHistory) add(sample clientSample) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n := len(h.samples); n > 0 && h.samples[n-1].TS == sample.TS {
+		h.samples[n-1] = sample
+		return
+	}
+	h.samples = append(h.samples, sample)
+	if len(h.samples) > h.max {
+		h.samples = h.samples[len(h.samples)-h.max:]
+	}
+}
+
+func (h *clientHistory) since(since int64) []clientSample {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]clientSample, 0, len(h.samples))
+	for _, s := range h.samples {
+		if s.TS >= since {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // SSE Clients for live streaming
 var (
 	clientsMu sync.Mutex
@@ -89,6 +142,13 @@ func main() {
 				filters[topic] = 0
 			}
 		}
+		// Events are non-retained and the collector publishes them at QoS 1;
+		// subscribe at QoS 1 so a brief reconnect does not drop transitions.
+		for _, topic := range strings.Split(env("CUDY_EVENT_TOPIC", "cudy/events/#"), ",") {
+			if topic = strings.TrimSpace(topic); topic != "" {
+				filters[topic] = 1
+			}
+		}
 		if token := c.SubscribeMultiple(filters, handleMessage); token.Wait() && token.Error() != nil {
 			log.Printf("Failed to subscribe: %v", token.Error())
 		}
@@ -102,6 +162,9 @@ func main() {
 	http.HandleFunc("/api/history", handleHistory)
 	http.HandleFunc("/api/status", handleStatus)
 	http.HandleFunc("/api/messages", handleMessages)
+	http.HandleFunc("/api/cudy/events", handleCudyEvents)
+	http.HandleFunc("/api/cudy/clients/history", handleCudyClientsHistory)
+	http.HandleFunc("/api/cudy/usage", handleCudyUsage)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !liveClient.IsConnected() {
@@ -126,6 +189,10 @@ func handleMessage(client mqtt.Client, msg mqtt.Message) {
 	}
 	if strings.HasPrefix(msg.Topic(), "cudy/state/") {
 		handleCudyState(msg.Topic(), msg.Payload())
+		return
+	}
+	if strings.HasPrefix(msg.Topic(), "cudy/events/") {
+		handleCudyEvent(msg.Topic(), msg.Payload())
 		return
 	}
 	var payload map[string]interface{}
@@ -190,6 +257,12 @@ func handleCudyState(topic string, payload []byte) {
 	cudyMu.Lock()
 	cudyAreas[area] = body
 	cudyMu.Unlock()
+	if area == "clients" {
+		if sample, ok := clientSampleFromState(body); ok {
+			cudyClientRing.add(sample)
+		}
+	}
+	deriveCudyEvents(area, body)
 	broadcast(map[string]interface{}{
 		"sensor": "cudy",
 		"data":   map[string]interface{}{"area": area, "state": body},

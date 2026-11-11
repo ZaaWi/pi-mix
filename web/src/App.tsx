@@ -5,7 +5,7 @@ import { LiveMetricsGrid } from './components/LiveMetricsGrid';
 import { HistoryCharts } from './components/HistoryCharts';
 import { MessagesPanel } from './components/MessagesPanel';
 import { CudyTab } from './components/CudyTab';
-import { SensorData } from './types';
+import { CudyEvent, SensorData } from './types';
 
 type Tab = 'sensors' | 'cudy';
 
@@ -25,6 +25,7 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [tab, setTab] = useState<Tab>('sensors');
+  const [cudyEvents, setCudyEvents] = useState<CudyEvent[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -57,6 +58,11 @@ function App() {
           ...prev,
           cudy: { ...(prev.cudy || {}), [area]: areaState },
         }));
+        return;
+      }
+      if (msg.sensor === 'cudy_event') {
+        const event = msg.data as CudyEvent;
+        setCudyEvents(prev => [event, ...prev].slice(0, 200));
         return;
       }
       setState(prev => ({
@@ -118,7 +124,7 @@ function App() {
           <MessagesPanel />
         </>
       ) : (
-        <CudyTab cudy={state.cudy} />
+        <CudyTab cudy={state.cudy} liveEvents={cudyEvents} />
       )}
     </div>
   );

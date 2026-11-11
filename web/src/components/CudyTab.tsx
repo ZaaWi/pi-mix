@@ -1,62 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
-  Database,
   Gauge,
   Globe,
-  MonitorSmartphone,
   Router,
   Signal,
   Users,
 } from 'lucide-react';
 import { SensorCard } from './SensorCard';
 import { HistoryCharts, MetricConfig } from './HistoryCharts';
-import { CudyClient, CudyInterfaceStats, CudyState } from '../types';
+import { CudyClientsPanel } from './CudyClientsPanel';
+import { CudyCorrelation } from './CudyCorrelation';
+import { CudyRadioPanel } from './CudyRadioPanel';
+import { CudyTimeline } from './CudyTimeline';
+import { CudyUsagePanel } from './CudyUsagePanel';
+import { CudyEvent, CudyInterfaceStats, CudyState } from '../types';
+import { fmtBytes, fmtCount, fmtDuration, fmtRate } from '../lib/cudy';
 
 interface CudyTabProps {
   cudy?: CudyState;
+  liveEvents?: CudyEvent[];
 }
-
-const KB = 1024;
-const MB = KB * 1024;
-const GB = MB * 1024;
-const TB = GB * 1024;
-
-const fmtBytes = (value?: number | null): string => {
-  if (value === undefined || value === null || !Number.isFinite(value)) return '--';
-  const abs = Math.abs(value);
-  if (abs >= TB) return `${(value / TB).toFixed(2)} TB`;
-  if (abs >= GB) return `${(value / GB).toFixed(2)} GB`;
-  if (abs >= MB) return `${(value / MB).toFixed(1)} MB`;
-  if (abs >= KB) return `${(value / KB).toFixed(1)} KB`;
-  return `${value.toFixed(0)} B`;
-};
-
-const fmtRate = (value?: number | null): string => {
-  if (value === undefined || value === null || !Number.isFinite(value)) return '--';
-  return `${fmtBytes(value)}/s`;
-};
-
-const fmtKbps = (value?: number | null): string => {
-  if (value === undefined || value === null || !Number.isFinite(value)) return '--';
-  if (value >= 1000) return `${(value / 1000).toFixed(2)} Mbps`;
-  return `${value.toFixed(1)} kbps`;
-};
-
-const fmtCount = (value?: number | null): string => {
-  if (value === undefined || value === null || !Number.isFinite(value)) return '--';
-  return value.toLocaleString();
-};
-
-const fmtDuration = (seconds?: number | null): string => {
-  if (!seconds || seconds <= 0) return '--';
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-};
 
 // Metric groups shown in the shared history chart. Counter series use
 // agg="last" + rate so the chart plots bytes/s instead of a bucket average.
@@ -68,6 +32,10 @@ const CUDY_METRICS: Record<string, MetricConfig> = {
 
   'sensor_cudy_band': { label: 'Band', color: '#fbbf24', agg: 'max', step: true, group: 'Link' },
   'sensor_cudy_connected': { label: 'Connected (1/0)', color: '#34d399', agg: 'max', step: true, group: 'Link' },
+  'sensor_cudy_pcid': { label: 'PCI', color: '#f472b6', agg: 'last', step: true, group: 'Link' },
+  'sensor_cudy_cell_id_num': { label: 'Cell ID', color: '#fb7185', agg: 'last', step: true, group: 'Link' },
+  'sensor_cudy_ca_count': { label: 'Carrier aggregation count', color: '#22d3ee', agg: 'max', step: true, group: 'Link' },
+  'sensor_cudy_scc_count': { label: 'SCC count', color: '#2dd4bf', agg: 'max', step: true, group: 'Link' },
   'sensor_cudy_dl_bandwidth': { label: 'Download bandwidth', color: '#22d3ee', unit: 'MHz', agg: 'max', group: 'Link' },
   'sensor_cudy_ul_bandwidth': { label: 'Upload bandwidth', color: '#2dd4bf', unit: 'MHz', agg: 'max', group: 'Link' },
 
@@ -81,7 +49,8 @@ const CUDY_METRICS: Record<string, MetricConfig> = {
   'sensor_cudy_wn001_tx_bytes': { label: 'WAN upload', color: '#f472b6', agg: 'last', rate: true, unit: 'B/s', format: fmtRate, group: 'Traffic' },
 
   'sensor_cudy_current_bytes': { label: 'Session traffic', color: '#fbbf24', agg: 'last', unit: 'B', format: fmtBytes, group: 'Usage' },
-  'sensor_cudy_monthly_bytes': { label: 'Monthly traffic', color: '#38bdf8', agg: 'last', unit: 'B', format: fmtBytes, group: 'Usage' },
+  'sensor_cudy_session_traffic_bytes': { label: 'Modem session traffic', color: '#fb7185', agg: 'last', unit: 'B', format: fmtBytes, group: 'Usage' },
+  'sensor_cudy_monthly_bytes': { label: 'Router monthly counter', color: '#38bdf8', agg: 'last', unit: 'B', format: fmtBytes, group: 'Usage' },
   'sensor_cudy_total_bytes': { label: 'Total traffic', color: '#a78bfa', agg: 'last', unit: 'B', format: fmtBytes, group: 'Usage' },
 };
 
@@ -91,12 +60,10 @@ const interfaceLabel = (name: string): string => {
   return name;
 };
 
-const clientType = (client: CudyClient): string => {
-  if (client.conn_type) return client.conn_type;
-  return client.internet ? 'Online' : 'Unknown';
-};
+const eventKey = (event: CudyEvent): string =>
+  event.id || `${event.kind || 'event'}-${event.ts || 0}`;
 
-export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
+export const CudyTab: React.FC<CudyTabProps> = ({ cudy, liveEvents = [] }) => {
   const cellular = cudy?.cellular || {};
   const usage = cudy?.usage || {};
   const usageConfig = cudy?.usage_config || {};
@@ -107,8 +74,38 @@ export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
   const meshNodes = cudy?.mesh_nodes as { nodes?: unknown[]; count?: number } | undefined;
   const lan = cudy?.lan as { ip?: string; mac?: string } | undefined;
   const wireless = cudy?.wireless as { ssid?: string; channel?: string } | undefined;
-
   const interfaces = cudy?.interfaces;
+
+  const [storedEvents, setStoredEvents] = useState<CudyEvent[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const since = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+        const res = await fetch(`/api/cudy/events?since=${since}&limit=1000`, { signal: controller.signal });
+        if (!res.ok) return;
+        const json: { events?: CudyEvent[] } = await res.json();
+        if (!controller.signal.aborted) setStoredEvents(json.events || []);
+      } catch {
+        /* the timeline is optional; SSE events still merge in */
+      }
+    };
+    load();
+    const interval = setInterval(load, 60000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, []);
+
+  const events = useMemo(() => {
+    const byId = new Map<string, CudyEvent>();
+    for (const event of storedEvents) byId.set(eventKey(event), event);
+    for (const event of liveEvents) byId.set(eventKey(event), event);
+    return Array.from(byId.values()).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  }, [storedEvents, liveEvents]);
+
   const ifaceTs = typeof interfaces?.ts === 'number' ? interfaces.ts : 0;
   const ifaceEntries = useMemo(() => {
     const entries: [string, CudyInterfaceStats][] = [];
@@ -149,10 +146,7 @@ export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
   const wired = clients.filter(c => (c.conn_type || '').toLowerCase().includes('wired')).length;
   const wirelessClients = clients.length - wired;
   const clientTotal = clientsState?.total_clients ?? clientsState?.count ?? clients.length;
-  const monthlyLimit = Number(usageConfig.monthly_limit || 0);
-  const monthlyAllowance = usageConfig.monthly_allowance
-    ? `${usageConfig.monthly_allowance} ${usageConfig.monthly_allowance_unit || ''}`.trim()
-    : '--';
+  const caCount = cellular.ca_count ?? (cellular.pcc ? 1 + (cellular.scc_count ?? 0) : 0);
 
   return (
     <div className="cudy-tab">
@@ -163,7 +157,7 @@ export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
           value={cellular.connected ? 'Online' : 'Offline'}
           unit=""
           isPulse={false}
-          subText={[cellular.network_type, cellular.band ? `Band ${cellular.band}` : ''].filter(Boolean).join(' · ') || 'Waiting for router state'}
+          subText={[cellular.network_type, cellular.band ? `Band ${cellular.band}` : '', caCount > 0 ? `${caCount}CA` : ''].filter(Boolean).join(' · ') || 'Waiting for router state'}
         />
         <SensorCard
           title="Signal"
@@ -208,92 +202,11 @@ export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
         />
       </div>
 
-      <section className="glass glass-panel cudy-section">
-        <div className="cudy-section-head">
-          <div className="cudy-section-title">
-            <Database color="#38bdf8" />
-            Data usage
-          </div>
-          {usage.ts && <span className="cudy-muted">updated {new Date(usage.ts * 1000).toLocaleTimeString()}</span>}
-        </div>
-        <div className="usage-grid">
-          <div className="usage-item">
-            <span className="usage-label">This session</span>
-            <span className="usage-value">{fmtBytes(usage.current_bytes)}</span>
-          </div>
-          <div className="usage-item">
-            <span className="usage-label">This month</span>
-            <span className="usage-value">{fmtBytes(usage.monthly_bytes)}</span>
-          </div>
-          <div className="usage-item">
-            <span className="usage-label">Total</span>
-            <span className="usage-value">{fmtBytes(usage.total_bytes)}</span>
-          </div>
-          <div className="usage-item">
-            <span className="usage-label">Monthly limit</span>
-            <span className="usage-value">{monthlyLimit > 0 ? `${monthlyLimit} ${usageConfig.monthly_allowance_unit || ''}`.trim() : 'No limit'}</span>
-          </div>
-          <div className="usage-item">
-            <span className="usage-label">Monthly allowance</span>
-            <span className="usage-value">{monthlyAllowance}</span>
-          </div>
-          <div className="usage-item">
-            <span className="usage-label">SIM slot / alert</span>
-            <span className="usage-value">
-              {usageConfig.sim_slot ?? '--'} {usageConfig.alert_pct ? `· ${usageConfig.alert_pct}%` : ''}
-            </span>
-          </div>
-        </div>
-      </section>
-
-      <section className="glass glass-panel cudy-section">
-        <div className="cudy-section-head">
-          <div className="cudy-section-title">
-            <MonitorSmartphone color="#f472b6" />
-            Connected clients
-            <span className="cudy-count">{clients.length}</span>
-          </div>
-          {clientsState?.truncated && (
-            <span className="cudy-muted">
-              showing {clients.length} of {clientTotal} (payload capped)
-            </span>
-          )}
-        </div>
-        {clients.length > 0 ? (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Hostname</th>
-                  <th>IP</th>
-                  <th>MAC</th>
-                  <th>Connection</th>
-                  <th className="num">Down</th>
-                  <th className="num">Up</th>
-                  <th className="num">Signal</th>
-                  <th className="num">Online</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clients.map((client, i) => (
-                  <tr key={client.mac || client.ip || i}>
-                    <td>{client.hostname || 'Unknown'}</td>
-                    <td className="mono">{client.ip || '--'}</td>
-                    <td className="mono">{client.mac || '--'}</td>
-                    <td>{clientType(client)}</td>
-                    <td className="num">{fmtKbps(client.down_kbps)}</td>
-                    <td className="num">{fmtKbps(client.up_kbps)}</td>
-                    <td className="num">{client.signal !== null && client.signal !== undefined ? `${client.signal}%` : '--'}</td>
-                    <td className="num">{fmtDuration(client.online_seconds)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="cudy-empty">No client snapshot yet.</div>
-        )}
-      </section>
+      <CudyRadioPanel cellular={cellular} interfaces={interfaces} events={events} />
+      <CudyUsagePanel usage={usage} config={usageConfig} />
+      <CudyClientsPanel clients={clients} totalClients={clientTotal} truncated={clientsState?.truncated} />
+      <CudyCorrelation />
+      <CudyTimeline events={events} cellular={cellular} />
 
       <section className="glass glass-panel cudy-section">
         <div className="cudy-section-head">
@@ -360,6 +273,8 @@ export const CudyTab: React.FC<CudyTabProps> = ({ cudy }) => {
           <div className="info-row"><dt>LAN MAC</dt><dd className="mono">{lan?.mac || '--'}</dd></div>
           <div className="info-row"><dt>Firmware</dt><dd>{system?.firmware || '--'}</dd></div>
           <div className="info-row"><dt>WAN status</dt><dd>{cellular.network_type || '--'}</dd></div>
+          <div className="info-row"><dt>SIM slot</dt><dd>{usageConfig.sim_slot || '--'}</dd></div>
+          <div className="info-row"><dt>Public IP</dt><dd className="mono">{cellular.public_ip || '--'}</dd></div>
         </dl>
       </section>
 

@@ -59,6 +59,7 @@ var (
 	cudyMetricNames = []string{
 		"rssi", "rsrp", "rsrq", "sinr",
 		"band", "ul_bandwidth", "dl_bandwidth", "connected",
+		"pcid", "cell_id_num", "ca_count", "scc_count",
 		"session_traffic_bytes", "current_bytes", "monthly_bytes", "total_bytes",
 		"wn001_rx_bytes", "wn001_tx_bytes", "wn001_rx_pkts", "wn001_tx_pkts",
 		"1_rx_bytes", "1_tx_bytes", "1_rx_pkts", "1_tx_pkts",

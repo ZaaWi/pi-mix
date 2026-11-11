@@ -97,6 +97,14 @@ func TestParseCudyEvent(t *testing.T) {
 		t.Fatalf("event id = %q, want %q (deterministic for dedup)", e.ID, want)
 	}
 
+	// Carrier-aggregation and serving-cell metrics share the same allowlist.
+	for _, metric := range []string{"pcid", "cell_id_num", "ca_count", "scc_count"} {
+		body := map[string]any{"ts": now.Unix(), "value": 1}
+		if _, err := parseCudyEvent(mustJSON(t, body), "cudy/telemetry/"+metric, now); err != nil {
+			t.Fatalf("%s should be accepted: %v", metric, err)
+		}
+	}
+
 	// Same (metric, ts) must yield the same id so redelivery dedups.
 	e2, err := parseCudyEvent(mustJSON(t, good), topic, now)
 	if err != nil {

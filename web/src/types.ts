@@ -28,6 +28,7 @@ export interface CudyCellular {
   mcc?: string;
   mnc?: string;
   cell_id?: string;
+  cell_id_num?: number;
   pcid?: number;
   band?: number;
   ul_bandwidth_mhz?: number;
@@ -37,6 +38,14 @@ export interface CudyCellular {
   sinr?: number;
   rssi?: number;
   pcc?: string;
+  scc?: string;
+  scc_list?: string[];
+  scc_count?: number;
+  ca_count?: number;
+  connected_seconds?: number | null;
+  session_traffic_bytes?: number;
+  upload_bytes?: number;
+  download_bytes?: number;
 }
 
 export interface CudyUsage {
@@ -44,22 +53,85 @@ export interface CudyUsage {
   current_bytes?: number;
   monthly_bytes?: number;
   total_bytes?: number;
+  upload_bytes?: number;
+  download_bytes?: number;
 }
 
 export interface CudyUsageConfig {
   ts?: number;
   sim_slot?: string;
   monthly_stats?: string;
+  monthly_stats_enabled?: boolean;
   start_date?: string;
   total_used?: string;
   monthly_used?: string;
   total_limit?: string;
   monthly_limit?: string;
+  total_used_bytes?: number | null;
+  monthly_used_bytes?: number | null;
+  total_limit_bytes?: number | null;
+  monthly_limit_bytes?: number | null;
   total_allowance?: string;
   monthly_allowance?: string;
+  total_allowance_bytes?: number | null;
+  monthly_allowance_bytes?: number | null;
   total_allowance_unit?: string;
   monthly_allowance_unit?: string;
   alert_pct?: string;
+}
+
+/** A flattened cudy/events/<kind> payload persisted by the API. */
+export interface CudyEvent {
+  id?: string;
+  ts?: number;
+  kind?: string;
+  derived?: boolean;
+  [field: string]: unknown;
+}
+
+export interface CudyClientSample {
+  ts: number;
+  clients: CudyClient[];
+}
+
+export interface CudyClientHistory {
+  window_seconds?: number;
+  samples?: CudyClientSample[];
+}
+
+export interface CudyBurnSummary {
+  available?: boolean;
+  window_seconds?: number;
+  start?: number;
+  end?: number;
+  source?: string;
+  samples?: number;
+  start_ts?: number;
+  end_ts?: number;
+  start_bytes?: number;
+  end_bytes?: number;
+  delta_bytes?: number;
+  reset?: boolean;
+  bytes_per_day?: number;
+  projected_30d_bytes?: number;
+}
+
+export interface CudyDriftSummary {
+  available?: boolean;
+  router_total_bytes?: number;
+  telemetry_total_bytes?: number;
+  delta_bytes?: number;
+  pct?: number;
+}
+
+export interface CudyUsageSummary {
+  ts?: number;
+  usage?: CudyUsage;
+  config?: CudyUsageConfig;
+  enforced?: boolean;
+  burn?: CudyBurnSummary;
+  cycle?: CudyBurnSummary;
+  drift?: CudyDriftSummary;
 }
 
 export interface CudyInterfaceStats {
