@@ -2,10 +2,32 @@ import React, { useEffect, useState } from 'react';
 import { Activity } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
-const METRICS: Record<string, { label: string; color: string }> = {
-  'sensor_temp_c': { label: 'Temperature (°C)', color: '#38bdf8' },
-  'sensor_humidity_pct': { label: 'Humidity (%)', color: '#60a5fa' },
-  'sensor_weight_kg': { label: 'Weight (kg)', color: '#f472b6' },
+export interface MetricConfig {
+  label: string;
+  color: string;
+  unit?: string;
+  /** Bucket aggregation for 15m/1h series. Counters should use "last". */
+  agg?: 'avg' | 'last' | 'max' | 'min';
+  /** Derive a per-second rate from consecutive counter values. */
+  rate?: boolean;
+  /** Draw as a step line (band, connected, ...). */
+  step?: boolean;
+  /** Optional <optgroup> name for the metric selector. */
+  group?: string;
+  /** Format values for the tooltip and Y axis (bytes, rates, ...). */
+  format?: (value: number) => string;
+}
+
+interface HistoryChartsProps {
+  metrics?: Record<string, MetricConfig>;
+  defaultMetric?: string;
+  title?: string;
+}
+
+const DEFAULT_METRICS: Record<string, MetricConfig> = {
+  'sensor_temp_c': { label: 'Temperature (°C)', color: '#38bdf8', unit: '°C' },
+  'sensor_humidity_pct': { label: 'Humidity (%)', color: '#60a5fa', unit: '%' },
+  'sensor_weight_kg': { label: 'Weight (kg)', color: '#f472b6', unit: 'kg' },
   'sensor_analog': { label: 'Luminosity', color: '#fcd34d' }
 };
 
@@ -19,12 +41,37 @@ const TIME_RANGES = [
   { label: 'Last 30 Days', seconds: 30 * 24 * 60 * 60, step: '12h' },
 ];
 
-export const HistoryCharts: React.FC = () => {
-  const [activeMetric, setActiveMetric] = useState('sensor_temp_c');
+function formatTime(ts: number, rangeSeconds: number) {
+  const date = new Date(ts * 1000);
+  const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  if (rangeSeconds > 24 * 60 * 60) {
+    const dateStr = date.toLocaleDateString([], {month: 'short', day: 'numeric'});
+    return `${dateStr} ${timeStr}`;
+  }
+  return timeStr;
+}
+
+export const HistoryCharts: React.FC<HistoryChartsProps> = ({
+  metrics = DEFAULT_METRICS,
+  defaultMetric,
+  title = 'Historical Analysis',
+}) => {
+  const firstMetric = defaultMetric && metrics[defaultMetric] ? defaultMetric : Object.keys(metrics)[0];
+  const [activeMetric, setActiveMetric] = useState(firstMetric);
   const [timeRange, setTimeRange] = useState(TIME_RANGES[0]);
-  const [historyData, setHistoryData] = useState<any[]>([]);
+  const [historyData, setHistoryData] = useState<{ time: string; value: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const metricConfig = metrics[activeMetric] || Object.values(metrics)[0];
+  const agg = metricConfig?.agg || 'avg';
+  const rate = !!metricConfig?.rate;
+
+  useEffect(() => {
+    if (!metrics[activeMetric]) {
+      setActiveMetric(Object.keys(metrics)[0]);
+    }
+  }, [metrics, activeMetric]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -36,26 +83,34 @@ export const HistoryCharts: React.FC = () => {
       try {
         const end = Math.floor(Date.now() / 15000) * 15;
         const start = end - timeRange.seconds;
-        
-        const res = await fetch(`/api/history?query={__name__="${activeMetric}"}&start=${start}&end=${end}&step=${timeRange.step}`, {signal: controller.signal});
+
+        const res = await fetch(`/api/history?query={__name__="${activeMetric}"}&start=${start}&end=${end}&step=${timeRange.step}&agg=${agg}`, {signal: controller.signal});
         if(!res.ok) throw new Error(res.status === 503 ? "History storage is unavailable" : "History request failed");
         const json = await res.json();
         if(json.status !== "success") throw new Error("History request failed");
         setError('');
-        
+
         if (json.status === "success" && json.data && json.data.result) {
           const result = json.data.result[0];
           if (result && result.values) {
-            const isMultiDay = timeRange.seconds > 24 * 60 * 60;
-            const formatted = result.values.map((val: any[]) => {
-               const date = new Date(val[0] * 1000);
-               const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-               const dateStr = date.toLocaleDateString([], {month: 'short', day: 'numeric'});
-               return {
-                 time: isMultiDay ? `${dateStr} ${timeStr}` : timeStr,
-                 value: parseFloat(val[1])
-               };
-            });
+            const raw = result.values.map((val: any[]) => ({
+              ts: Number(val[0]),
+              value: parseFloat(val[1]),
+            }));
+            const formatted = rate
+              ? raw.slice(1).map((p: {ts: number; value: number}, i: number) => {
+                  const dt = p.ts - raw[i].ts;
+                  const dv = p.value - raw[i].value;
+                  return {
+                    time: formatTime(p.ts, timeRange.seconds),
+                    // A negative delta means the counter reset; clamp to zero.
+                    value: dt > 0 && dv >= 0 ? dv / dt : 0,
+                  };
+                })
+              : raw.map((p: {ts: number; value: number}) => ({
+                  time: formatTime(p.ts, timeRange.seconds),
+                  value: p.value,
+                }));
             setHistoryData(formatted);
           } else {
             setHistoryData([]);
@@ -68,34 +123,64 @@ export const HistoryCharts: React.FC = () => {
         if(!controller.signal.aborted) setLoading(false);
       }
     };
-    
+
     fetchHistory();
     const interval = setInterval(fetchHistory, 15000);
     return () => {controller.abort();clearInterval(interval);};
-  }, [activeMetric, timeRange]);
+  }, [activeMetric, timeRange, agg, rate]);
 
-  const metricConfig = METRICS[activeMetric];
+  const lineType = metricConfig?.step ? 'stepAfter' : 'monotone';
+
+  // Group metrics into <optgroup> sections while preserving declaration order.
+  const metricGroups = (() => {
+    const order: string[] = [];
+    const groups = new Map<string, [string, MetricConfig][]>();
+    for (const entry of Object.entries(metrics)) {
+      const name = entry[1].group || '';
+      if (!groups.has(name)) {
+        groups.set(name, []);
+        order.push(name);
+      }
+      groups.get(name)!.push(entry);
+    }
+    return order.map(name => ({ name, items: groups.get(name)! }));
+  })();
+
+  const formatValue = (value: number | string) =>
+    metricConfig?.format
+      ? metricConfig.format(Number(value))
+      : `${Number(value).toFixed(2)}${metricConfig?.unit ? ' ' + metricConfig.unit : ''}`;
 
   return (
     <div className="chart-container glass glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="sensor-header" style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Activity color="#a78bfa" /> 
-          <span>Historical Analysis</span>
+          <Activity color="#a78bfa" />
+          <span>{title}</span>
         </div>
-        
+
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <select 
+          <select
             value={activeMetric}
             onChange={(e) => setActiveMetric(e.target.value)}
             className="glass-select"
           >
-            {Object.entries(METRICS).map(([key, config]) => (
-              <option key={key} value={key}>{config.label}</option>
-            ))}
+            {metricGroups.map(group =>
+              group.name ? (
+                <optgroup key={group.name} label={group.name}>
+                  {group.items.map(([key, config]) => (
+                    <option key={key} value={key}>{config.label}</option>
+                  ))}
+                </optgroup>
+              ) : (
+                group.items.map(([key, config]) => (
+                  <option key={key} value={key}>{config.label}</option>
+                ))
+              )
+            )}
           </select>
 
-          <select 
+          <select
             value={timeRange.seconds}
             onChange={(e) => setTimeRange(TIME_RANGES.find(t => t.seconds === Number(e.target.value)) || TIME_RANGES[0])}
             className="glass-select"
@@ -106,7 +191,7 @@ export const HistoryCharts: React.FC = () => {
           </select>
         </div>
       </div>
-      
+
       <div style={{ flex: 1, width: '100%', minHeight: '300px' }}>
         {error ? (<div role="alert" style={{color: "#fca5a5", padding: "1rem"}}>{error}</div>) : loading && historyData.length === 0 ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#64748b' }}>
@@ -117,12 +202,16 @@ export const HistoryCharts: React.FC = () => {
             <LineChart data={historyData}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
               <XAxis dataKey="time" stroke="#94a3b8" />
-              <YAxis stroke="#94a3b8" domain={['auto', 'auto']} />
-              <Tooltip 
+              <YAxis stroke="#94a3b8" domain={rate ? [0, 'auto'] : ['auto', 'auto']} tickFormatter={metricConfig?.format} />
+              <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc' }}
-                itemStyle={{ color: metricConfig.color }}
+                itemStyle={{ color: metricConfig?.color }}
+                formatter={(value: unknown) => [
+                  formatValue(Number(value)),
+                  metricConfig?.label || activeMetric,
+                ]}
               />
-              <Line type="monotone" dataKey="value" name={metricConfig.label} stroke={metricConfig.color} strokeWidth={3} dot={false} activeDot={{ r: 8 }} />
+              <Line type={lineType} dataKey="value" name={metricConfig?.label} stroke={metricConfig?.color} strokeWidth={3} dot={false} activeDot={{ r: 8 }} />
             </LineChart>
           </ResponsiveContainer>
         ) : (

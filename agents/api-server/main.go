@@ -41,6 +41,26 @@ var (
 	state   = make(map[string]map[string]interface{})
 )
 
+// cudyState holds the latest retained cudy/state/<area> snapshot. The
+// collector publishes these for the dashboard; the ingestor stores the
+// historical scalar series from cudy/telemetry/# instead.
+var (
+	cudyMu    sync.RWMutex
+	cudyAreas = make(map[string]map[string]interface{})
+)
+
+// cudyStateAreas limits what the API forwards to the dashboard. arp and routes
+// are intentionally excluded: they are large and the UI does not need them.
+var cudyStateAreas = map[string]bool{
+	"cellular": true, "usage": true, "usage_config": true,
+	"interfaces": true, "clients": true,
+	"mesh": true, "mesh_nodes": true,
+	"wan": true, "lan": true, "wireless": true, "system": true,
+}
+
+// cudySensitiveFields are never exposed over /api/state or SSE.
+var cudySensitiveFields = []string{"imsi", "imei", "iccid"}
+
 // SSE Clients for live streaming
 var (
 	clientsMu sync.Mutex
@@ -58,7 +78,18 @@ func main() {
 	opts.SetUsername(os.Getenv("MQTT_USERNAME")).SetPassword(os.Getenv("MQTT_PASSWORD"))
 	opts.OnConnect = func(c mqtt.Client) {
 		log.Printf("Connected to MQTT broker: %s", mqttBroker)
-		if token := c.Subscribe(mqttTopic, 0, handleMessage); token.Wait() && token.Error() != nil {
+		filters := map[string]byte{}
+		for _, topic := range strings.Split(mqttTopic, ",") {
+			if topic = strings.TrimSpace(topic); topic != "" {
+				filters[topic] = 0
+			}
+		}
+		for _, topic := range strings.Split(env("CUDY_STATE_TOPIC", "cudy/state/#"), ",") {
+			if topic = strings.TrimSpace(topic); topic != "" {
+				filters[topic] = 0
+			}
+		}
+		if token := c.SubscribeMultiple(filters, handleMessage); token.Wait() && token.Error() != nil {
 			log.Printf("Failed to subscribe: %v", token.Error())
 		}
 	}
@@ -93,6 +124,10 @@ func handleMessage(client mqtt.Client, msg mqtt.Message) {
 	if len(msg.Payload()) > 4096 {
 		return
 	}
+	if strings.HasPrefix(msg.Topic(), "cudy/state/") {
+		handleCudyState(msg.Topic(), msg.Payload())
+		return
+	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
 		return
@@ -117,27 +152,71 @@ func handleMessage(client mqtt.Client, msg mqtt.Message) {
 	stateMu.Unlock()
 
 	// 2. Broadcast to all connected web dashboards instantly
-	data, _ := json.Marshal(map[string]interface{}{
+	broadcast(map[string]interface{}{
 		"sensor": sensorName,
 		"data":   payload,
 	})
+}
 
+// broadcast sends one JSON event to every connected dashboard.
+func broadcast(event map[string]interface{}) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
 	clientsMu.Lock()
+	defer clientsMu.Unlock()
 	for ch := range clients {
 		select {
 		case ch <- string(data):
 		default:
 		}
 	}
-	clientsMu.Unlock()
+}
+
+// handleCudyState caches and forwards one retained cudy/state/<area> snapshot.
+func handleCudyState(topic string, payload []byte) {
+	area := strings.TrimPrefix(topic, "cudy/state/")
+	if area == "" || strings.Contains(area, "/") || !cudyStateAreas[area] {
+		return
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return
+	}
+	for _, field := range cudySensitiveFields {
+		delete(body, field)
+	}
+	cudyMu.Lock()
+	cudyAreas[area] = body
+	cudyMu.Unlock()
+	broadcast(map[string]interface{}{
+		"sensor": "cudy",
+		"data":   map[string]interface{}{"area": area, "state": body},
+	})
 }
 
 // Returns the last known state of all sensors immediately (solves cold-start)
 func handleState(w http.ResponseWriter, r *http.Request) {
 	stateMu.RLock()
-	defer stateMu.RUnlock()
+	snapshot := make(map[string]interface{}, len(state)+1)
+	for name, payload := range state {
+		snapshot[name] = payload
+	}
+	stateMu.RUnlock()
+
+	cudyMu.RLock()
+	if len(cudyAreas) > 0 {
+		cudy := make(map[string]map[string]interface{}, len(cudyAreas))
+		for area, payload := range cudyAreas {
+			cudy[area] = payload
+		}
+		snapshot["cudy"] = cudy
+	}
+	cudyMu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state)
+	json.NewEncoder(w).Encode(snapshot)
 }
 
 // Server-Sent Events (SSE) stream for live updates
@@ -214,11 +293,21 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query", 400)
 		return
 	}
+	aggMode := r.URL.Query().Get("agg")
+	if aggMode == "" {
+		aggMode = "avg"
+	}
+	switch aggMode {
+	case "avg", "last", "max", "min":
+	default:
+		http.Error(w, "invalid agg", 400)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	pts, source, err := resolveHistory(ctx, historyCache, metricName, startN, endN)
+	pts, source, err := resolveHistoryMode(ctx, historyCache, metricName, startN, endN, aggMode)
 	if err != nil {
 		http.Error(w, "History storage is unavailable", 503)
 		return
@@ -260,6 +349,13 @@ func seriesKey(series, metricName string) string { return "pi-mix:" + series + "
 // resolveHistory queries the chosen resolution first, falling back to coarser
 // ones when a fresh Redis has not yet backfilled that resolution.
 func resolveHistory(ctx context.Context, rdb *redis.Client, metricName string, startN, endN int64) (pts []point, source string, err error) {
+	return resolveHistoryMode(ctx, rdb, metricName, startN, endN, "avg")
+}
+
+// resolveHistoryMode is resolveHistory with an explicit bucket aggregation.
+// Counter series use "last" so the dashboard can derive a rate from deltas;
+// gauges use the default average.
+func resolveHistoryMode(ctx context.Context, rdb *redis.Client, metricName string, startN, endN int64, mode string) (pts []point, source string, err error) {
 	if rdb == nil {
 		return nil, "", fmt.Errorf("redis unavailable")
 	}
@@ -272,7 +368,7 @@ func resolveHistory(ctx context.Context, rdb *redis.Client, metricName string, s
 	}
 	fatal := false
 	for _, series := range order {
-		p, qerr := seriesPoints(ctx, rdb, series, metricName, startN, endN)
+		p, qerr := seriesPointsMode(ctx, rdb, series, metricName, startN, endN, mode)
 		if qerr != nil {
 			log.Printf("history: redis %s: %v", series, qerr)
 			fatal = true
@@ -290,6 +386,10 @@ func resolveHistory(ctx context.Context, rdb *redis.Client, metricName string, s
 }
 
 func seriesPoints(ctx context.Context, rdb *redis.Client, series, metricName string, startN, endN int64) ([]point, error) {
+	return seriesPointsMode(ctx, rdb, series, metricName, startN, endN, "avg")
+}
+
+func seriesPointsMode(ctx context.Context, rdb *redis.Client, series, metricName string, startN, endN int64, mode string) ([]point, error) {
 	rangeSpec := &redis.ZRangeBy{Min: strconv.FormatInt(startN, 10), Max: strconv.FormatInt(endN, 10)}
 	key := seriesKey(series, metricName)
 	if series == "raw" {
@@ -297,7 +397,7 @@ func seriesPoints(ctx context.Context, rdb *redis.Client, series, metricName str
 		return parseRedisMembers(members), err
 	}
 	items, err := rdb.ZRangeByScoreWithScores(ctx, key, rangeSpec).Result()
-	return parseAggMembers(items), err
+	return parseAggMembersMode(items, mode), err
 }
 
 // agg mirrors the member JSON written by the ingestor into the 15m/1h ZSETs.
@@ -311,6 +411,10 @@ type agg struct {
 }
 
 func parseAggMembers(items []redis.Z) []point {
+	return parseAggMembersMode(items, "avg")
+}
+
+func parseAggMembersMode(items []redis.Z, mode string) []point {
 	pts := make([]point, 0, len(items))
 	for _, z := range items {
 		member, _ := z.Member.(string)
@@ -319,6 +423,14 @@ func parseAggMembers(items []redis.Z) []point {
 			continue
 		}
 		val := a.S / float64(a.C)
+		switch mode {
+		case "last":
+			val = a.L
+		case "max":
+			val = a.Mx
+		case "min":
+			val = a.Mn
+		}
 		if math.IsNaN(val) || math.IsInf(val, 0) {
 			continue
 		}
@@ -426,13 +538,20 @@ func historyResponse(metric, sensor string, points []point) map[string]any {
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	stateMu.RLock()
-	defer stateMu.RUnlock()
 	ages := map[string]any{}
 	for _, name := range []string{"dht11", "ldr", "scale", "ir"} {
 		p := state[name]
 		ts, _ := p["ts"].(float64)
 		ages[name] = map[string]any{"last_seen": ts, "stale": ts == 0 || time.Now().Unix()-int64(ts) > 30}
 	}
+	stateMu.RUnlock()
+
+	// The collector's fast poll is 60s; allow two missed cycles before stale.
+	cudyMu.RLock()
+	cudyTS, _ := cudyAreas["cellular"]["ts"].(float64)
+	cudyMu.RUnlock()
+	ages["cudy"] = map[string]any{"last_seen": cudyTS, "stale": cudyTS == 0 || time.Now().Unix()-int64(cudyTS) > 600}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"mqtt_connected": liveClient != nil && liveClient.IsConnected(), "sensors": ages})
 }
