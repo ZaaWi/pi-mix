@@ -3,7 +3,7 @@ ARG TARGETOS TARGETARCH
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY main.go ./
+COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o api-server .
 
 FROM alpine:latest
