@@ -338,6 +338,27 @@ func TestHandleCudyClientsHistoryEndpoint(t *testing.T) {
 	}
 }
 
+func TestCudyProjection(t *testing.T) {
+	const gib = 1 << 30
+	// 1 GiB over one day is 1 GiB/day and 30 GiB over 30 days.
+	perDay, projected, ok := cudyProjection(float64(gib), 86400)
+	if !ok {
+		t.Fatal("expected a projection")
+	}
+	if perDay != float64(gib) {
+		t.Fatalf("perDay = %v, want %v", perDay, float64(gib))
+	}
+	if projected != float64(gib)*30 {
+		t.Fatalf("projected = %v, want %v", projected, float64(gib)*30)
+	}
+	if _, _, ok := cudyProjection(-1, 86400); ok {
+		t.Fatal("a counter reset must not project")
+	}
+	if _, _, ok := cudyProjection(1, 0); ok {
+		t.Fatal("a zero-length window must not project")
+	}
+}
+
 func TestCudyBurnSummaryWithoutRedis(t *testing.T) {
 	out := cudyBurnSummary(context.Background(), nil, 0, 100)
 	if out["available"] != false {

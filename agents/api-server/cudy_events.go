@@ -540,6 +540,16 @@ func deriveCudyEvents(area string, body map[string]interface{}) {
 	}
 }
 
+// cudyProjection turns a byte delta over span seconds into a per-day rate and
+// a 30-day projection. It rejects resets and zero-length windows.
+func cudyProjection(delta float64, span int64) (perDay, projected30d float64, ok bool) {
+	if span <= 0 || delta < 0 {
+		return 0, 0, false
+	}
+	perDay = delta / float64(span) * 86400
+	return perDay, perDay * 30, true
+}
+
 // cudyBurnSummary derives a byte/day rate from the counter history. The router
 // has no calendar-scoped counter, so this is based on observed total_bytes
 // deltas over the requested window.
@@ -571,10 +581,9 @@ func cudyBurnSummary(ctx context.Context, rdb *redis.Client, start, end int64) m
 	out["end_bytes"] = last.val
 	out["delta_bytes"] = delta
 	out["reset"] = delta < 0
-	if span > 0 && delta >= 0 {
-		perDay := delta / float64(span) * 86400
+	if perDay, projected, ok := cudyProjection(delta, span); ok {
 		out["bytes_per_day"] = perDay
-		out["projected_30d_bytes"] = perDay * 30 * 86400
+		out["projected_30d_bytes"] = projected
 	}
 	return out
 }
