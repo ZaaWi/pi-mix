@@ -19,7 +19,7 @@ spec:
         kubernetes.io/hostname: vaio-server
       containers:
       - name: ingestor
-        image: mhmdzawi/pi-mix-ingestor:99e89b674cf78a276d6d06caf4fc2af973d35005
+        image: mhmdzawi/pi-mix-ingestor:29ae7d0ec1dbe9629fd1f9193441ff42781a33a8
         imagePullPolicy: IfNotPresent
         env:
         - name: MQTT_BROKER
