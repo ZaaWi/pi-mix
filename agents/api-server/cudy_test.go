@@ -231,6 +231,37 @@ func TestDeriveClientJoinLeave(t *testing.T) {
 	}
 }
 
+func TestDeriveClientEventsSkipsTruncatedPayload(t *testing.T) {
+	resetCudyEvents()
+	defer resetCudyEvents()
+
+	deriveCudyEvents("clients", map[string]interface{}{
+		"clients": []interface{}{
+			map[string]interface{}{"mac": "aa"},
+			map[string]interface{}{"mac": "bb"},
+		},
+	})
+	// A truncated snapshot omits clients; it must not look like a leave.
+	deriveCudyEvents("clients", map[string]interface{}{
+		"truncated": true,
+		"clients":   []interface{}{map[string]interface{}{"mac": "aa"}},
+	})
+	if events := cudyEventRing.since(0, "", 0); len(events) != 0 {
+		t.Fatalf("truncated snapshot emitted events: %v", eventKinds(events))
+	}
+	// The next complete snapshot reseeds, so the known client set is the
+	// baseline again rather than a flood of joins.
+	deriveCudyEvents("clients", map[string]interface{}{
+		"clients": []interface{}{
+			map[string]interface{}{"mac": "aa"},
+			map[string]interface{}{"mac": "bb"},
+		},
+	})
+	if events := cudyEventRing.since(0, "", 0); len(events) != 0 {
+		t.Fatalf("reseed emitted events: %v", eventKinds(events))
+	}
+}
+
 func TestClientSampleFromState(t *testing.T) {
 	body := map[string]interface{}{
 		"ts": float64(1700000000),

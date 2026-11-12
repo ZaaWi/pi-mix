@@ -483,6 +483,13 @@ func deriveCudyEvents(area string, body map[string]interface{}) {
 		}
 
 	case "clients":
+		// A capped payload drops clients from the tail, so diffing it would
+		// emit false leave/join events. Wait for a complete snapshot and
+		// reseed; the collector's own event topic still covers transitions.
+		if truncated, _ := body["truncated"].(bool); truncated {
+			cudyDerived.clientsInit = false
+			return
+		}
 		raw, ok := body["clients"].([]interface{})
 		if !ok {
 			return
